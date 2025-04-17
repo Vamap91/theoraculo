@@ -1,40 +1,53 @@
 import streamlit as st
 from oraculo.auth import get_graph_token
-from oraculo.scraper import listar_bibliotecas, listar_arquivos, baixar_arquivos
-
-GRAPH_SITE_ID = "carglassbr.sharepoint.com,85529d0d-fc1c-4821-9aaf-da4a315706a0,12fa70b9-ebc2-46ce-90dc-896b28eeea18"
+from oraculo.scraper import extrair_imagens_da_pagina, aplicar_ocr_em_imagens
 
 st.set_page_config(page_title="Oráculo 🔮", page_icon="📘", layout="wide")
-st.title("🔮 Oráculo - Extração Inteligente de Arquivos do SharePoint")
+st.title("🔮 Oráculo - Extração Inteligente de Comunicados Visuais")
 
-token = get_graph_token()
-if not token:
+URL_TARGET = "https://carglassbr.sharepoint.com/sites/GuiaRpido/SitePages/P%C3%A1gina%20inicial.aspx"
+
+st.markdown(f"### 🎯 Página-alvo: [{URL_TARGET}]({URL_TARGET})")
+st.markdown("---")
+
+with st.spinner("🔍 Extraindo imagens visíveis da página..."):
+    imagens = extrair_imagens_da_pagina(URL_TARGET)
+
+if not imagens:
+    st.warning("⚠️ Nenhuma imagem encontrada na página ou erro ao acessar o SharePoint.")
     st.stop()
 
-st.markdown(f"### 🧠 Usando site ID conhecido:\n`{GRAPH_SITE_ID}`")
+st.success(f"✅ {len(imagens)} imagens encontradas!")
 
-# Listar bibliotecas (drives)
-drives = listar_bibliotecas(token, GRAPH_SITE_ID)
-if not drives:
-    st.warning("⚠️ Nenhuma biblioteca foi encontrada no site.")
-    st.stop()
+st.markdown("---")
+st.markdown("### 🧠 Resultados do OCR sobre as imagens:")
 
-st.markdown("## 📁 Bibliotecas de Documentos Encontradas:")
-for d in drives:
-    st.write(f"- {d['name']} (ID: {d['id']})")
+ocr_resultados = aplicar_ocr_em_imagens(imagens)
 
-# Buscar arquivos em todas as bibliotecas
-todos_arquivos = []
-for drive in drives:
-    arquivos = listar_arquivos(token, drive["id"])
-    if arquivos:
-        todos_arquivos.extend(arquivos)
+for idx, texto in enumerate(ocr_resultados):
+    with st.expander(f"🖼️ Resultado OCR da Imagem {idx+1}"):
+        st.markdown(f"```\n{texto}\n```")
 
-st.markdown(f"### 📄 Total de arquivos detectados: {len(todos_arquivos)}")
+st.markdown("---")
 
-# Baixar arquivos para a pasta local
-if todos_arquivos:
-    caminhos = baixar_arquivos(token, todos_arquivos)
-    st.success(f"✅ {len(caminhos)} arquivos baixados para a pasta `data/` com sucesso!")
-else:
-    st.warning("Nenhum arquivo relevante encontrado para download.")
+st.markdown("### 🤖 Pergunte algo com base nas imagens extraídas:")
+pergunta = st.text_input("Digite sua pergunta:")
+
+if pergunta:
+    contexto = "\n\n".join(ocr_resultados)
+    with st.spinner("🔮 Consultando IA..."):
+        from openai import OpenAI
+        import os
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+        resposta = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Você é um assistente que responde apenas com base nas comunicações visuais extraídas de imagens."},
+                {"role": "user", "content": f"Contexto:\n{contexto}\n\nPergunta: {pergunta}"}
+            ],
+            temperature=0.2
+        )
+        st.success("🧠 Resposta gerada com sucesso!")
+        st.markdown(f"**Resposta:** {resposta.choices[0].message.content}")
+
