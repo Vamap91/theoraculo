@@ -1,8 +1,9 @@
 streamlit
 pillow
-pytesseract
 openai
-requests
-beautifulsoup4
 easyocr
 torch
+requests
+python-dotenv
+beautifulsoup4
+pytesseract
