@@ -1,31 +1,42 @@
-# oraculo/scraper.py
-
+import os
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 
-GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+def extrair_imagens_da_pagina(url):
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            st.error("❌ Não foi possível acessar a página do SharePoint.")
+            return []
 
-def get_site_id(token, site_url):
-    headers = {"Authorization": f"Bearer {token}"}
-    domain = site_url.split("/sites/")[0].replace("https://", "")
-    site_path = site_url.split("/sites/")[1]
+        soup = BeautifulSoup(response.text, "html.parser")
+        imagens = soup.find_all("img")
+        links = []
 
-    url = f"{GRAPH_ROOT}/sites/{domain}:/sites/{site_path}"
-    resp = requests.get(url, headers=headers)
+        for img in imagens:
+            src = img.get("src")
+            if src and "sharepoint.com" in src:
+                links.append(src)
 
-    if resp.status_code == 200:
-        return resp.json()["id"]
-    else:
-        st.error(f"Erro ao buscar site ID: {resp.text}")
-        return None
-
-def list_drive_items(token, site_id):
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_ROOT}/sites/{site_id}/drive/root/children"
-    resp = requests.get(url, headers=headers)
-
-    if resp.status_code == 200:
-        return resp.json().get("value", [])
-    else:
-        st.error(f"Erro ao listar arquivos: {resp.text}")
+        return links
+    except Exception as e:
+        st.error(f"Erro ao extrair imagens: {e}")
         return []
+
+def baixar_imagens(links, pasta="data"):
+    if not os.path.exists(pasta):
+        os.makedirs(pasta)
+
+    caminhos = []
+    for idx, url in enumerate(links):
+        nome = f"img_{idx}.png"
+        caminho = os.path.join(pasta, nome)
+        try:
+            r = requests.get(url)
+            with open(caminho, "wb") as f:
+                f.write(r.content)
+            caminhos.append(caminho)
+        except Exception as e:
+            st.warning(f"Erro ao baixar {url}: {e}")
+    return caminhos
