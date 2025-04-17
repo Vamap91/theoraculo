@@ -1,65 +1,58 @@
 import os
 import requests
-import streamlit as st
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from PIL import Image
+from io import BytesIO
+import pytesseract
 
-GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+def extrair_imagens_da_pagina(url, pasta_destino="data"):
+    if not os.path.exists(pasta_destino):
+        os.makedirs(pasta_destino)
 
-def get_site_id(token, site_url="https://carglassbr.sharepoint.com/sites/GuiaRpido"):
-    headers = {"Authorization": f"Bearer {token}"}
-    site_path = site_url.replace("https://", "").split("/", 1)[1]
-    domain = "carglassbr.sharepoint.com"
-    url = f"{GRAPH_ROOT}/sites/{domain}:/sites/{site_path}"
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
 
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()["id"]
-    else:
-        st.error("❌ Erro ao obter site_id")
-        st.code(response.text)
-        return None
-
-def listar_bibliotecas(token, site_id):
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_ROOT}/sites/{site_id}/drives"
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 200:
-        return response.json().get("value", [])
-    else:
-        st.error("❌ Erro ao listar drives")
-        st.code(response.text)
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"[ERRO] Falha ao acessar a página: {e}")
         return []
 
-def listar_arquivos(token, drive_id):
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_ROOT}/drives/{drive_id}/root/children"
-    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.content, "html.parser")
+    imagens = soup.find_all("img")
 
-    if response.status_code == 200:
-        return response.json().get("value", [])
-    else:
-        return []
+    caminhos_salvos = []
 
-def baixar_arquivos(token, arquivos, pasta="data", extensoes_validas=None):
-    if extensoes_validas is None:
-        extensoes_validas = [".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".txt"]
+    for i, img_tag in enumerate(imagens):
+        src = img_tag.get("src")
+        if not src:
+            continue
 
-    headers = {"Authorization": f"Bearer {token}"}
-    if not os.path.exists(pasta):
-        os.makedirs(pasta)
+        img_url = urljoin(url, src)
 
-    caminhos = []
-    for arq in arquivos:
-        nome = arq.get("name", "")
-        link = arq.get("@microsoft.graph.downloadUrl")
+        try:
+            img_data = requests.get(img_url).content
+            img = Image.open(BytesIO(img_data)).convert("RGB")
 
-        if any(nome.lower().endswith(ext) for ext in extensoes_validas) and link:
-            local = os.path.join(pasta, nome)
-            try:
-                r = requests.get(link, headers=headers)
-                with open(local, "wb") as f:
-                    f.write(r.content)
-                caminhos.append(local)
-            except Exception as e:
-                st.warning(f"Erro ao baixar {nome}: {e}")
-    return caminhos
+            caminho = os.path.join(pasta_destino, f"imagem_{i+1}.jpg")
+            img.save(caminho)
+            caminhos_salvos.append(caminho)
+        except Exception as e:
+            print(f"[ERRO] Erro ao baixar ou salvar imagem {img_url}: {e}")
+            continue
+
+    return caminhos_salvos
+
+def aplicar_ocr_em_imagens(lista_caminhos):
+    resultados = []
+    for caminho in lista_caminhos:
+        try:
+            img = Image.open(caminho)
+            texto = pytesseract.image_to_string(img, lang="por")
+            resultados.append(texto.strip())
+        except Exception as e:
+            resultados.append(f"[ERRO] ao processar {caminho}: {e}")
+    return resultados
