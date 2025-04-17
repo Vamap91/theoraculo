@@ -1,12 +1,6 @@
 streamlit
-openai
-PyPDF2
-scikit-learn
-numpy
-requests
-beautifulsoup4
-tqdm
-python-docx
-easyocr
 pillow
 pytesseract
+openai
+requests
+beautifulsoup4
