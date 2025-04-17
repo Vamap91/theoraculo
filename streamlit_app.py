@@ -1,51 +1,40 @@
 import streamlit as st
-import requests
 from oraculo.auth import get_graph_token
+from oraculo.scraper import listar_bibliotecas, listar_arquivos, baixar_arquivos
 
-GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+GRAPH_SITE_ID = "carglassbr.sharepoint.com,85529d0d-fc1c-4821-9aaf-da4a315706a0,12fa70b9-ebc2-46ce-90dc-896b28eeea18"
 
-# Configuração da página
 st.set_page_config(page_title="Oráculo 🔮", page_icon="📘", layout="wide")
-st.title("🔮 Oráculo - Teste de Acesso ao SharePoint")
+st.title("🔮 Oráculo - Extração Inteligente de Arquivos do SharePoint")
 
-# 🔑 Gera token
 token = get_graph_token()
 if not token:
     st.stop()
 
-# 🔍 Função auxiliar para buscar sites com o nome "Guia"
-def buscar_sites_por_nome(token, keyword="Guia"):
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_ROOT}/sites?search={keyword}"
+st.markdown(f"### 🧠 Usando site ID conhecido:\n`{GRAPH_SITE_ID}`")
 
-    st.markdown("### 🔎 Buscando sites com a palavra-chave:")
-    response = requests.get(url, headers=headers)
+# Listar bibliotecas (drives)
+drives = listar_bibliotecas(token, GRAPH_SITE_ID)
+if not drives:
+    st.warning("⚠️ Nenhuma biblioteca foi encontrada no site.")
+    st.stop()
 
-    if response.status_code == 200:
-        resultados = response.json().get("value", [])
-        if not resultados:
-            st.warning("Nenhum site encontrado com esse termo.")
-            return None
+st.markdown("## 📁 Bibliotecas de Documentos Encontradas:")
+for d in drives:
+    st.write(f"- {d['name']} (ID: {d['id']})")
 
-        for site in resultados:
-            st.markdown(f"""
-            - 🧭 **Nome**: `{site['name']}`  
-            - 🌐 **Web URL**: {site['webUrl']}  
-            - 🆔 **Site ID**: `{site['id']}`
-            """)
-        
-        st.success("✔️ Sites encontrados com sucesso!")
-        return resultados[0]["id"]  # Usa o primeiro site como padrão
-    else:
-        st.error("❌ Erro ao buscar sites.")
-        st.code(response.text)
-        return None
+# Buscar arquivos em todas as bibliotecas
+todos_arquivos = []
+for drive in drives:
+    arquivos = listar_arquivos(token, drive["id"])
+    if arquivos:
+        todos_arquivos.extend(arquivos)
 
-# 🔁 Busca automática de site_id com base na palavra-chave "Guia"
-site_id = buscar_sites_por_nome(token, keyword="Guia")
+st.markdown(f"### 📄 Total de arquivos detectados: {len(todos_arquivos)}")
 
-if site_id:
-    st.success(f"📍 ID do site selecionado: `{site_id}`")
+# Baixar arquivos para a pasta local
+if todos_arquivos:
+    caminhos = baixar_arquivos(token, todos_arquivos)
+    st.success(f"✅ {len(caminhos)} arquivos baixados para a pasta `data/` com sucesso!")
 else:
-    st.warning("⚠️ Não foi possível recuperar o site ID.")
-
+    st.warning("Nenhum arquivo relevante encontrado para download.")
