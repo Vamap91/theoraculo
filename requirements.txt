@@ -4,3 +4,4 @@ pytesseract
 openai
 requests
 beautifulsoup4
+easyocr
