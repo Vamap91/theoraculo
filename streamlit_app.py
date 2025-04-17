@@ -2,47 +2,58 @@ import streamlit as st
 from oraculo.auth import get_graph_token
 from oraculo.scraper import extrair_imagens_da_pagina, baixar_imagens
 from oraculo.ocr import extrair_texto_das_imagens
+from oraculo.embeddings import gerar_embeddings
 
 st.set_page_config(page_title="Oráculo 🔮", page_icon="📘", layout="wide")
-st.title("🔮 Oráculo - Extração de Conhecimento Internos")
+st.title("🔮 Oráculo - Extração Inteligente de Comunicados")
 
-# 🔐 Autenticação com Microsoft Graph (futuramente para HTML privado)
+# 1. Autenticação (placeholder para Graph API futura)
 token = get_graph_token()
 if not token:
     st.stop()
 
-# 📎 URL da página de comunicados
+# 2. URL da página
 url_pagina = "https://carglassbr.sharepoint.com/sites/GuiaRpido/SitePages/P%C3%A1gina%20inicial.aspx"
+st.subheader("🔗 Lendo comunicados da página SharePoint")
+st.write(f"Página-alvo: {url_pagina}")
 
-st.markdown("## 🔗 Lendo a página pública do SharePoint")
-st.write(f"Página: {url_pagina}")
-
-# 🔍 Etapa 1: Extrair imagens da página HTML
+# 3. Extrair links de imagens da página
 links = extrair_imagens_da_pagina(url_pagina)
 
 if not links:
-    st.warning("Nenhuma imagem com link SharePoint encontrada na página.")
+    st.warning("Nenhuma imagem encontrada na página.")
     st.stop()
 
-st.success(f"{len(links)} imagens encontradas!")
+st.success(f"{len(links)} imagens encontradas na página.")
 st.markdown("---")
 
-# 💾 Etapa 2: Baixar as imagens localmente
-st.markdown("### 📥 Baixando imagens...")
+# 4. Baixar imagens
 caminhos = baixar_imagens(links)
-
 if not caminhos:
-    st.warning("Não foi possível baixar as imagens.")
+    st.warning("❌ Falha ao baixar imagens.")
     st.stop()
 
-# 🧠 Etapa 3: Rodar OCR nas imagens baixadas
-st.markdown("### 🧠 Rodando OCR com IA")
+# 5. Rodar OCR nas imagens
+st.markdown("### 🧠 Rodando OCR nas imagens...")
 textos = extrair_texto_das_imagens(caminhos)
 
-if textos:
-    st.markdown("### 📃 Resultados da Leitura por Imagem:")
-    for i, texto in enumerate(textos):
-        st.markdown(f"**Imagem {i+1}:**")
-        st.code(texto[:1000])  # Mostra só os primeiros 1000 caracteres
+if not textos:
+    st.warning("Nenhum texto foi extraído via OCR.")
+    st.stop()
+
+# 6. Mostrar resultados do OCR
+st.markdown("### 📃 Textos extraídos:")
+for i, t in enumerate(textos):
+    st.markdown(f"**Imagem {i+1}:**")
+    st.code(t[:1000])  # Exibe até 1000 caracteres por trecho
+
+# 7. Gerar embeddings com OpenAI
+st.markdown("### 🔮 Gerando vetores semânticos (embeddings)...")
+vetores = gerar_embeddings(textos)
+
+if vetores is not None and len(vetores) > 0:
+    st.success(f"✅ Embeddings gerados para {len(vetores)} blocos.")
+    st.session_state["chunks"] = textos
+    st.session_state["embeddings"] = vetores
 else:
-    st.warning("OCR não retornou nenhum texto legível.")
+    st.warning("❌ Não foi possível gerar embeddings para os textos.")
