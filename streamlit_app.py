@@ -1,53 +1,72 @@
 import streamlit as st
-from oraculo.auth import get_graph_token
-from oraculo.scraper import extrair_imagens_da_pagina, aplicar_ocr_em_imagens
+import requests
+from PIL import Image
+from io import BytesIO
+import pytesseract
+from oraculo.scraper import extrair_imagens_da_pagina
+from oraculo.ocr import extrair_texto_de_imagem
+from openai import OpenAI
+import os
 
-st.set_page_config(page_title="Oráculo 🔮", page_icon="📘", layout="wide")
-st.title("🔮 Oráculo - Extração Inteligente de Comunicados Visuais")
+# Configuração inicial
+st.set_page_config(page_title="Oráculo - Extração Inteligente de Comunicados", page_icon="🔮", layout="wide")
+st.title("🔮 Oráculo - Extração Inteligente de Comunicados")
 
-URL_TARGET = "https://carglassbr.sharepoint.com/sites/GuiaRpido/SitePages/P%C3%A1gina%20inicial.aspx"
+# Inicializa cliente OpenAI
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.markdown(f"### 🎯 Página-alvo: [{URL_TARGET}]({URL_TARGET})")
-st.markdown("---")
+# Página alvo do SharePoint
+url_pagina = "https://carglassbr.sharepoint.com/sites/GuiaRpido/SitePages/P%C3%A1gina%20inicial.aspx"
+st.markdown(f"📎 **Lendo comunicados da página SharePoint** [Acessar site]({url_pagina})")
 
-with st.spinner("🔍 Extraindo imagens visíveis da página..."):
-    imagens = extrair_imagens_da_pagina(URL_TARGET)
+# Extrair imagens dos comunicados
+with st.spinner("🔄 Acessando a página e localizando imagens..."):
+    imagens = extrair_imagens_da_pagina(url_pagina)
 
 if not imagens:
-    st.warning("⚠️ Nenhuma imagem encontrada na página ou erro ao acessar o SharePoint.")
+    st.error("❌ Não foi possível acessar a página do SharePoint.")
     st.stop()
 
-st.success(f"✅ {len(imagens)} imagens encontradas!")
+# Mostrar imagens extraídas
+st.subheader("🖼️ Comunicados encontrados:")
+conteudo_extraido = []
 
-st.markdown("---")
-st.markdown("### 🧠 Resultados do OCR sobre as imagens:")
+for idx, img in enumerate(imagens):
+    st.image(img, caption=f"Comunicado {idx+1}", use_column_width=True)
+    texto = extrair_texto_de_imagem(img)
+    conteudo_extraido.append(texto)
 
-ocr_resultados = aplicar_ocr_em_imagens(imagens)
+# Mostrar conteúdo OCR
+with st.expander("🔎 Conteúdo extraído por OCR (texto bruto)", expanded=False):
+    for i, texto in enumerate(conteudo_extraido):
+        st.markdown(f"**Comunicado {i+1}:**")
+        st.code(texto)
 
-for idx, texto in enumerate(ocr_resultados):
-    with st.expander(f"🖼️ Resultado OCR da Imagem {idx+1}"):
-        st.markdown(f"```\n{texto}\n```")
-
-st.markdown("---")
-
-st.markdown("### 🤖 Pergunte algo com base nas imagens extraídas:")
+# Campo de pergunta
+st.markdown("## 🤖 Faça uma pergunta sobre os comunicados acima:")
 pergunta = st.text_input("Digite sua pergunta:")
 
-if pergunta:
-    contexto = "\n\n".join(ocr_resultados)
-    with st.spinner("🔮 Consultando IA..."):
-        from openai import OpenAI
-        import os
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+if pergunta and conteudo_extraido:
+    contexto = "\n\n---\n\n".join(conteudo_extraido)
+    prompt = f"""
+Você é um assistente que responde exclusivamente com base nas informações dos comunicados abaixo. 
+Caso a informação não esteja presente, diga: "Não encontrei essa informação nos comunicados."
 
+Comunicados:
+{contexto}
+
+Pergunta: {pergunta}
+Resposta:
+    """
+
+    with st.spinner("🔍 Analisando com IA..."):
         resposta = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Você é um assistente que responde apenas com base nas comunicações visuais extraídas de imagens."},
-                {"role": "user", "content": f"Contexto:\n{contexto}\n\nPergunta: {pergunta}"}
-            ],
-            temperature=0.2
+                {"role": "system", "content": "Você é um assistente preciso que responde com base em OCR de comunicados internos."},
+                {"role": "user", "content": prompt}
+            ]
         )
-        st.success("🧠 Resposta gerada com sucesso!")
-        st.markdown(f"**Resposta:** {resposta.choices[0].message.content}")
-
+        resposta_texto = resposta.choices[0].message.content.strip()
+        st.success("💬 Resposta da IA:")
+        st.write(resposta_texto)
