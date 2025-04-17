@@ -1,59 +1,38 @@
 import streamlit as st
 from oraculo.auth import get_graph_token
-from oraculo.scraper import extrair_imagens_da_pagina, baixar_imagens
-from oraculo.ocr import extrair_texto_das_imagens
-from oraculo.embeddings import gerar_embeddings
+from oraculo.scraper import get_site_id, listar_bibliotecas, listar_arquivos, baixar_arquivos
 
 st.set_page_config(page_title="Oráculo 🔮", page_icon="📘", layout="wide")
-st.title("🔮 Oráculo - Extração Inteligente de Comunicados")
+st.title("🔮 Oráculo - Validação do Acesso ao SharePoint")
 
-# 1. Autenticação (placeholder para Graph API futura)
 token = get_graph_token()
 if not token:
     st.stop()
 
-# 2. URL da página
-url_pagina = "https://carglassbr.sharepoint.com/sites/GuiaRpido/SitePages/P%C3%A1gina%20inicial.aspx"
-st.subheader("🔗 Lendo comunicados da página SharePoint")
-st.write(f"Página-alvo: {url_pagina}")
+# Etapas do acesso
+site_url = "https://carglassbr.sharepoint.com/sites/GuiaRpido"
+site_id = get_site_id(token, site_url)
 
-# 3. Extrair links de imagens da página
-links = extrair_imagens_da_pagina(url_pagina)
+if site_id:
+    st.success(f"📍 site_id obtido: `{site_id}`")
 
-if not links:
-    st.warning("Nenhuma imagem encontrada na página.")
-    st.stop()
+    drives = listar_bibliotecas(token, site_id)
+    if drives:
+        st.markdown("### 📚 Bibliotecas encontradas:")
+        for d in drives:
+            st.write(f"- {d['name']} (ID: {d['id']})")
 
-st.success(f"{len(links)} imagens encontradas na página.")
-st.markdown("---")
+        todos_arquivos = []
+        for drive in drives:
+            arquivos = listar_arquivos(token, drive["id"])
+            if arquivos:
+                todos_arquivos.extend(arquivos)
 
-# 4. Baixar imagens
-caminhos = baixar_imagens(links)
-if not caminhos:
-    st.warning("❌ Falha ao baixar imagens.")
-    st.stop()
+        st.markdown(f"### 📄 Total de arquivos detectados: {len(todos_arquivos)}")
 
-# 5. Rodar OCR nas imagens
-st.markdown("### 🧠 Rodando OCR nas imagens...")
-textos = extrair_texto_das_imagens(caminhos)
-
-if not textos:
-    st.warning("Nenhum texto foi extraído via OCR.")
-    st.stop()
-
-# 6. Mostrar resultados do OCR
-st.markdown("### 📃 Textos extraídos:")
-for i, t in enumerate(textos):
-    st.markdown(f"**Imagem {i+1}:**")
-    st.code(t[:1000])  # Exibe até 1000 caracteres por trecho
-
-# 7. Gerar embeddings com OpenAI
-st.markdown("### 🔮 Gerando vetores semânticos (embeddings)...")
-vetores = gerar_embeddings(textos)
-
-if vetores is not None and len(vetores) > 0:
-    st.success(f"✅ Embeddings gerados para {len(vetores)} blocos.")
-    st.session_state["chunks"] = textos
-    st.session_state["embeddings"] = vetores
+        caminhos = baixar_arquivos(token, todos_arquivos)
+        st.success(f"✅ {len(caminhos)} arquivos baixados para análise.")
+    else:
+        st.warning("Nenhuma biblioteca de documentos encontrada.")
 else:
-    st.warning("❌ Não foi possível gerar embeddings para os textos.")
+    st.warning("Não foi possível recuperar o site.")
