@@ -3,5 +3,3 @@ __pycache__/
 *.pdf
 *.png
 data/
-
-#.idea/
