@@ -1,3 +1,11 @@
-streamlit>=1.32.0
-openai>=1.11.0
-python-dotenv>=1.0.1
+streamlit
+openai
+PyPDF2
+scikit-learn
+numpy
+requests
+beautifulsoup4
+tqdm
+python-docx
+easyocr
+pillow
