@@ -123,3 +123,32 @@ def get_token_info(token: str) -> Dict[str, Any]:
     except Exception as e:
         st.warning(f"Erro ao decodificar token: {str(e)}")
         return {}
+
+def renovar_token_se_necessario(token: str) -> Optional[str]:
+    """
+    Verifica se o token está prestes a expirar e renova se necessário.
+    
+    Args:
+        token: Token de autenticação atual
+        
+    Returns:
+        Token renovado ou None se não foi possível renovar
+    """
+    if not token:
+        return get_graph_token()
+        
+    # Verifica informações do token
+    info = get_token_info(token)
+    
+    # Se o token expirar em menos de 5 minutos, renova
+    if info.get("expires_in_minutes", 0) < 5:
+        st.info("Token de acesso prestes a expirar. Renovando...")
+        novo_token = get_graph_token()
+        if novo_token:
+            st.success("Token renovado com sucesso.")
+            return novo_token
+        else:
+            st.error("Falha ao renovar token.")
+            return None
+    
+    return token  # Retorna o token original se ainda for válido
