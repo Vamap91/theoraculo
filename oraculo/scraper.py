@@ -1,6 +1,6 @@
 """
 Módulo de busca e download de arquivos do SharePoint via Microsoft Graph API.
-Fornece funções para listar bibliotecas, navegar pastas e baixar arquivos.
+Adaptado para tratar estrutura hierárquica de menus e navegação do Guia Rápido.
 """
 
 import os
@@ -65,13 +65,23 @@ def listar_pastas(token: str, drive_id: str, folder_path: str = "/") -> List[Dic
         
         # Filtra apenas itens que são pastas
         items = response.json().get("value", [])
-        return [item for item in items if item.get("folder")]
+        folders = []
+        
+        for item in items:
+            if item.get("folder"):
+                # Adiciona informação de nível hierárquico à pasta
+                nivel = folder_path.count('/') + 1
+                item['_nivel_hierarquico'] = nivel
+                item['_caminho_pasta'] = folder_path
+                folders.append(item)
+        
+        return folders
         
     except requests.exceptions.RequestException as e:
         st.warning(f"Erro ao listar pastas em {folder_path}: {str(e)}")
         return []
 
-def listar_arquivos(token: str, drive_id: str, folder_path: str = "/") -> List[Dict[str, Any]]:
+def listar_arquivos(token: str, drive_id: str, folder_path: str = "/", extensoes_validas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
     Lista apenas os arquivos (não pastas) em um caminho específico.
     
@@ -79,11 +89,16 @@ def listar_arquivos(token: str, drive_id: str, folder_path: str = "/") -> List[D
         token: Token de autenticação
         drive_id: ID da biblioteca do SharePoint
         folder_path: Caminho relativo da pasta
+        extensoes_validas: Lista de extensões de arquivo para filtrar
         
     Returns:
         Lista de arquivos no caminho especificado
     """
     headers = {"Authorization": f"Bearer {token}"}
+    
+    # Define extensões válidas padrão se não fornecidas
+    if extensoes_validas is None:
+        extensoes_validas = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".txt"]
     
     # Determine a URL correta com base no caminho da pasta
     if folder_path == "/":
@@ -98,9 +113,29 @@ def listar_arquivos(token: str, drive_id: str, folder_path: str = "/") -> List[D
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         
-        # Filtra apenas itens que NÃO são pastas
+        # Filtra apenas itens que NÃO são pastas e têm extensões válidas
         items = response.json().get("value", [])
-        return [item for item in items if not item.get("folder")]
+        files = []
+        
+        for item in items:
+            if not item.get("folder"):
+                # Adiciona informação de nível hierárquico ao arquivo
+                nivel = folder_path.count('/') + 1
+                item['_nivel_hierarquico'] = nivel
+                item['_caminho_pasta'] = folder_path
+                
+                # Filtra por extensão, se especificado
+                nome = item.get("name", "").lower()
+                if any(nome.endswith(ext.lower()) for ext in extensoes_validas):
+                    # Tenta identificar categoria com base no caminho/nome
+                    if "guia_rapido" in folder_path.lower() or "guia rápido" in folder_path.lower():
+                        item['_categoria'] = "Guia Rápido"
+                    elif "comunicado" in nome.lower():
+                        item['_categoria'] = "Comunicado"
+                    
+                    files.append(item)
+        
+        return files
         
     except requests.exceptions.RequestException as e:
         st.warning(f"Erro ao listar arquivos em {folder_path}: {str(e)}")
@@ -115,10 +150,12 @@ def listar_todos_os_arquivos(
     progress_end: float = 1.0,
     nivel_atual: int = 0,
     limite: Optional[int] = None,
-    filtrar_extensoes: Optional[List[str]] = None
+    filtrar_extensoes: Optional[List[str]] = None,
+    exibir_progresso: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Lista todos os arquivos recursivamente, incluindo em subpastas.
+    Adaptado para estrutura hierárquica.
     
     Args:
         token: Token de autenticação
@@ -130,6 +167,7 @@ def listar_todos_os_arquivos(
         nivel_atual: Nível de recursão atual
         limite: Número máximo de arquivos a retornar
         filtrar_extensoes: Lista de extensões de arquivo para filtrar
+        exibir_progresso: Se deve exibir mensagens de progresso
         
     Returns:
         Lista de arquivos encontrados
@@ -144,7 +182,7 @@ def listar_todos_os_arquivos(
         caminho_pasta = caminho_pasta.replace("//", "/")
         if caminho_pasta.startswith("/"):
             caminho_pasta = caminho_pasta[1:]
-        url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{caminho_pasta}:/children"
+url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{caminho_pasta}:/children"
     
     arquivos = []
     try:
@@ -161,7 +199,7 @@ def listar_todos_os_arquivos(
         total_itens = len(itens)
         
         # Atualiza o status na barra de progresso
-        if progress_bar and nivel_atual == 0:
+        if progress_bar and exibir_progresso and nivel_atual == 0:
             progress_bar.progress(
                 progress_start + 0.1 * (progress_end - progress_start),
                 text=f"Encontrados {total_itens} itens em {caminho_pasta or '/'}"
@@ -174,7 +212,7 @@ def listar_todos_os_arquivos(
                 break
             
             # Calcula o progresso atual
-            if progress_bar and nivel_atual == 0:
+            if progress_bar and exibir_progresso and nivel_atual == 0:
                 current_progress = progress_start + (progress_end - progress_start) * (i / total_itens)
                 progress_bar.progress(
                     min(current_progress, progress_end),
@@ -185,8 +223,12 @@ def listar_todos_os_arquivos(
             if item.get("folder"):
                 nova_pasta = f"{caminho_pasta}/{item['name']}".replace("//", "/")
                 
+                # Adiciona nível hierárquico à pasta para manter contexto
+                item['_nivel_hierarquico'] = nivel_atual
+                item['_caminho_pasta'] = caminho_pasta
+                
                 # Define a porção do progresso para esta subpasta
-                if progress_bar and nivel_atual == 0:
+                if progress_bar and exibir_progresso and nivel_atual == 0:
                     sub_start = progress_start + (progress_end - progress_start) * (i / total_itens)
                     sub_end = progress_start + (progress_end - progress_start) * ((i + 1) / total_itens)
                 else:
@@ -197,8 +239,26 @@ def listar_todos_os_arquivos(
                 sub_arquivos = listar_todos_os_arquivos(
                     token, drive_id, nova_pasta, 
                     progress_bar, sub_start, sub_end,
-                    nivel_atual + 1, limite, filtrar_extensoes
+                    nivel_atual + 1, limite, filtrar_extensoes,
+                    exibir_progresso
                 )
+                
+                # Anexa informações de contexto sobre a estrutura de navegação
+                for arq in sub_arquivos:
+                    arq['_pasta_pai'] = item['name']
+                    
+                    # Tenta identificar categorias especiais
+                    nome_pasta = item['name'].lower()
+                    if "guia" in nome_pasta and "rápido" in nome_pasta:
+                        arq['_categoria'] = "Guia Rápido"
+                    elif "comunicado" in nome_pasta:
+                        arq['_categoria'] = "Comunicado"
+                    elif "linha" in nome_pasta and "frente" in nome_pasta:
+                        arq['_categoria'] = "Linha de Frente"
+                    elif "assistência" in nome_pasta or "assistencia" in nome_pasta:
+                        arq['_categoria'] = "Assistência"
+                    elif "seguro" in nome_pasta or "segurador" in nome_pasta:
+                        arq['_categoria'] = "Seguro"
                 
                 arquivos.extend(sub_arquivos)
                 
@@ -212,8 +272,40 @@ def listar_todos_os_arquivos(
                 # Aplica filtro de extensão se fornecido
                 if filtrar_extensoes:
                     if any(nome_arquivo.endswith(ext.lower()) for ext in filtrar_extensoes):
+                        # Adiciona informações de contexto hierárquico
+                        item['_nivel_hierarquico'] = nivel_atual
+                        item['_caminho_pasta'] = caminho_pasta
+                        
+                        # Tenta identificar categorias especiais baseadas no nome
+                        if "guia" in nome_arquivo and "pratico" in nome_arquivo:
+                            item['_categoria'] = "Guia Prático"
+                        elif "comunicado" in nome_arquivo:
+                            item['_categoria'] = "Comunicado"
+                            
+                            # Extrai data do comunicado, se presente
+                            import re
+                            datas = re.findall(r'\d{1,2}/\d{1,2}(?:/\d{2,4})?', nome_arquivo)
+                            if datas:
+                                item['_data_comunicado'] = datas[0]
+                        
                         arquivos.append(item)
                 else:
+                    # Adiciona informações de contexto hierárquico
+                    item['_nivel_hierarquico'] = nivel_atual
+                    item['_caminho_pasta'] = caminho_pasta
+                    
+                    # Tenta identificar categorias especiais baseadas no nome
+                    if "guia" in nome_arquivo and "pratico" in nome_arquivo:
+                        item['_categoria'] = "Guia Prático"
+                    elif "comunicado" in nome_arquivo:
+                        item['_categoria'] = "Comunicado"
+                        
+                        # Extrai data do comunicado, se presente
+                        import re
+                        datas = re.findall(r'\d{1,2}/\d{1,2}(?:/\d{2,4})?', nome_arquivo)
+                        if datas:
+                            item['_data_comunicado'] = datas[0]
+                    
                     arquivos.append(item)
         
         # Verifica se há mais páginas (paginação)
@@ -230,8 +322,14 @@ def listar_todos_os_arquivos(
                     # Aplica filtro de extensão se fornecido
                     if filtrar_extensoes:
                         if any(nome_arquivo.endswith(ext.lower()) for ext in filtrar_extensoes):
+                            # Adiciona informações de contexto hierárquico
+                            item['_nivel_hierarquico'] = nivel_atual
+                            item['_caminho_pasta'] = caminho_pasta
                             arquivos.append(item)
                     else:
+                        # Adiciona informações de contexto hierárquico
+                        item['_nivel_hierarquico'] = nivel_atual
+                        item['_caminho_pasta'] = caminho_pasta
                         arquivos.append(item)
                 
                 # Verifica o limite
@@ -242,7 +340,7 @@ def listar_todos_os_arquivos(
             next_link = response.json().get("@odata.nextLink")
         
         # Finaliza a barra de progresso
-        if progress_bar and nivel_atual == 0:
+        if progress_bar and exibir_progresso and nivel_atual == 0:
             progress_bar.progress(
                 progress_end,
                 text=f"Busca concluída! Encontrados {len(arquivos)} arquivos."
@@ -250,7 +348,7 @@ def listar_todos_os_arquivos(
             time.sleep(0.5)  # Breve pausa para mostrar a mensagem
     
     except requests.exceptions.RequestException as e:
-        if nivel_atual == 0:  # Exibe erros apenas no nível principal
+        if nivel_atual == 0 and exibir_progresso:  # Exibe erros apenas no nível principal
             st.warning(f"Erro ao listar arquivos em {caminho_pasta}: {str(e)}")
     
     return arquivos
@@ -259,19 +357,22 @@ def baixar_arquivo(
     token: str, 
     download_url: str, 
     nome_arquivo: str, 
+    caminho_pasta: str = "/",
     pasta_destino: str = "data"
-) -> Tuple[Optional[str], Optional[bytes]]:
+) -> Tuple[Optional[str], Optional[bytes], Optional[str]]:
     """
     Baixa um único arquivo do SharePoint.
+    Adaptado para preservar informações de contexto hierárquico.
     
     Args:
         token: Token de autenticação
         download_url: URL para download do arquivo
         nome_arquivo: Nome do arquivo para salvar
+        caminho_pasta: Caminho da pasta SharePoint (para contexto)
         pasta_destino: Pasta local para salvar o arquivo
         
     Returns:
-        Tupla contendo (caminho_local, conteúdo_binário)
+        Tupla contendo (caminho_local, conteúdo_binário, caminho_pasta)
     """
     headers = {"Authorization": f"Bearer {token}"}
     
@@ -280,8 +381,16 @@ def baixar_arquivo(
         os.makedirs(pasta_destino)
     
     # Constrói o caminho local para o arquivo
+    # Preserva a informação de hierarquia no nome do arquivo
+    caminho_seguro = caminho_pasta.replace('/', '_').strip('_')
     nome_seguro = nome_arquivo.replace(':', '_').replace('/', '_')
-    caminho_local = os.path.join(pasta_destino, nome_seguro)
+    
+    if caminho_seguro:
+        nome_arquivo_final = f"{caminho_seguro}_{nome_seguro}"
+    else:
+        nome_arquivo_final = nome_seguro
+    
+    caminho_local = os.path.join(pasta_destino, nome_arquivo_final)
     
     try:
         # Tenta baixar o arquivo
@@ -293,11 +402,11 @@ def baixar_arquivo(
         with open(caminho_local, "wb") as f:
             f.write(conteudo)
         
-        return caminho_local, conteudo
+        return caminho_local, conteudo, caminho_pasta
     
     except requests.exceptions.RequestException as e:
         st.warning(f"Erro ao baixar {nome_arquivo}: {str(e)}")
-        return None, None
+        return None, None, None
 
 def baixar_arquivos(
     token: str,
@@ -306,9 +415,10 @@ def baixar_arquivos(
     extensoes_validas: Optional[List[str]] = None,
     progress_bar: Optional[Any] = None,
     max_tentativas: int = 3
-) -> List[str]:
+) -> List[Dict[str, Any]]:
     """
     Baixa múltiplos arquivos do SharePoint.
+    Adaptado para preservar estrutura hierárquica.
     
     Args:
         token: Token de autenticação
@@ -319,7 +429,7 @@ def baixar_arquivos(
         max_tentativas: Número máximo de tentativas para cada arquivo
         
     Returns:
-        Lista de caminhos para os arquivos baixados
+        Lista de dicionários com informações dos arquivos baixados
     """
     # Define extensões padrão se não fornecidas
     if extensoes_validas is None:
@@ -352,13 +462,16 @@ def baixar_arquivos(
     if progress_bar:
         progress_bar.progress(0, text=f"Preparando para baixar {total_arquivos} arquivos...")
     
-    # Lista para armazenar caminhos dos arquivos baixados
-    caminhos = []
+    # Lista para armazenar informações dos arquivos baixados
+    arquivos_baixados = []
     
     # Download dos arquivos
     for i, arq in enumerate(arquivos_para_baixar):
         nome = arq.get("name", "")
         link = arq.get("@microsoft.graph.downloadUrl")
+        nivel = arq.get("_nivel_hierarquico", 0)
+        caminho = arq.get("_caminho_pasta", "/")
+        categoria = arq.get("_categoria", "")
         
         if link:
             # Atualiza progresso
@@ -371,9 +484,31 @@ def baixar_arquivos(
             # Tenta baixar com múltiplas tentativas
             for tentativa in range(max_tentativas):
                 try:
-                    caminho_local, _ = baixar_arquivo(token, link, nome, pasta)
+                    caminho_local, conteudo_binario, caminho_pasta = baixar_arquivo(
+                        token, link, nome, caminho, pasta
+                    )
+                    
                     if caminho_local:
-                        caminhos.append(caminho_local)
+                        # Adiciona informações para cada arquivo baixado
+                        arquivo_info = {
+                            "nome": nome,
+                            "caminho_local": caminho_local,
+                            "nivel_hierarquico": nivel,
+                            "caminho_pasta": caminho,
+                            "categoria": categoria
+                        }
+                        
+                        # Verifica tipo de arquivo
+                        if nome.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                            arquivo_info["tipo"] = "imagem"
+                        elif nome.lower().endswith('.pdf'):
+                            arquivo_info["tipo"] = "pdf"
+                        elif nome.lower().endswith(('.txt', '.csv')):
+                            arquivo_info["tipo"] = "texto"
+                        else:
+                            arquivo_info["tipo"] = "outro"
+                        
+                        arquivos_baixados.append(arquivo_info)
                         break
                     elif tentativa < max_tentativas - 1:
                         # Espera antes de tentar novamente
@@ -387,11 +522,11 @@ def baixar_arquivos(
     if progress_bar:
         progress_bar.progress(
             1.0, 
-            text=f"✅ Download concluído! {len(caminhos)}/{total_arquivos} arquivos baixados."
+            text=f"✅ Download concluído! {len(arquivos_baixados)}/{total_arquivos} arquivos baixados."
         )
         time.sleep(0.5)
     
-    return caminhos
+    return arquivos_baixados
 
 def obter_detalhes_biblioteca(token: str, drive_id: str) -> Dict[str, Any]:
     """
@@ -433,3 +568,69 @@ def verificar_token(token: str) -> bool:
         return response.status_code == 200
     except:
         return False
+
+def analisar_estrutura_navegacao(arquivos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analisa a estrutura de navegação dos arquivos encontrados.
+    
+    Args:
+        arquivos: Lista de dicionários com informações dos arquivos
+        
+    Returns:
+        Dicionário com informações sobre a estrutura hierárquica
+    """
+    niveis = {}
+    caminhos = set()
+    categorias = {}
+    tipos_arquivos = {}
+    
+    for arq in arquivos:
+        # Conta arquivos por nível
+        nivel = arq.get("_nivel_hierarquico", 0)
+        if nivel not in niveis:
+            niveis[nivel] = 0
+        niveis[nivel] += 1
+        
+        # Registra caminhos únicos
+        caminho = arq.get("_caminho_pasta", "/")
+        caminhos.add(caminho)
+        
+        # Conta arquivos por categoria
+        categoria = arq.get("_categoria", "Sem categoria")
+        if categoria not in categorias:
+            categorias[categoria] = 0
+        categorias[categoria] += 1
+        
+        # Conta tipos de arquivo
+        nome = arq.get("name", "").lower()
+        if nome.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+            tipo = "imagem"
+        elif nome.endswith('.pdf'):
+            tipo = "pdf"
+        elif nome.endswith(('.txt', '.csv')):
+            tipo = "texto"
+        else:
+            tipo = "outro"
+            
+        if tipo not in tipos_arquivos:
+            tipos_arquivos[tipo] = 0
+        tipos_arquivos[tipo] += 1
+    
+    # Cria árvore de navegação
+    arvore = {}
+    for caminho in sorted(caminhos):
+        partes = caminho.strip('/').split('/')
+        nivel_atual = arvore
+        for parte in partes:
+            if parte:
+                if parte not in nivel_atual:
+                    nivel_atual[parte] = {}
+                nivel_atual = nivel_atual[parte]
+    
+    return {
+        "niveis": niveis,
+        "caminhos": list(caminhos),
+        "categorias": categorias,
+        "tipos_arquivos": tipos_arquivos,
+        "arvore_navegacao": arvore
+    }
