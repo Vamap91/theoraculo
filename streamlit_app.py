@@ -629,5 +629,125 @@ if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extrai
                 unsafe_allow_html=True
             )
             
-            # Adiciona na sessão
-            if 'historico' not in st.session
+            # Adiciona ao histórico
+            if 'historico' not in st.session_state:
+                st.session_state['historico'] = []
+            
+# Adiciona ao histórico (limitado aos últimos 5)
+            st.session_state['historico'].insert(
+                0, {"pergunta": pergunta, "resposta": resposta}
+            )
+            if len(st.session_state['historico']) > 5:
+                st.session_state['historico'] = st.session_state['historico'][:5]
+
+# Mostra histórico de perguntas, se existir
+if 'historico' in st.session_state and st.session_state['historico']:
+    with st.expander("📜 Histórico de Consultas", expanded=False):
+        for idx, item in enumerate(st.session_state['historico']):
+            st.markdown(f"**Pergunta {idx+1}:** {item['pergunta']}")
+            st.markdown(
+                f"""<div style="background-color: #f5f5f5; padding: 10px; 
+                border-radius: 5px; margin-bottom: 15px; font-size: 0.9em;">
+                {item['resposta']}
+                </div>""", 
+                unsafe_allow_html=True
+            )
+
+# Verifica instalação do Tesseract
+with st.expander("🔧 Diagnósticos", expanded=False):
+    st.subheader("Verificação do Tesseract OCR")
+    try:
+        versao = pytesseract.get_tesseract_version()
+        st.success(f"✅ Tesseract OCR versão {versao} instalado e configurado.")
+        
+        try:
+            idiomas = pytesseract.get_languages()
+            st.info(f"Idiomas disponíveis: {', '.join(idiomas)}")
+        except:
+            st.warning("Não foi possível listar os idiomas disponíveis do Tesseract.")
+    except Exception as e:
+        st.error(f"❌ Tesseract OCR não encontrado ou não configurado: {str(e)}")
+        st.info("""
+        Para instalar o Tesseract OCR:
+        
+        **Windows:**
+        1. Baixe o instalador em https://github.com/UB-Mannheim/tesseract/wiki
+        2. Instale e adicione ao PATH
+        
+        **macOS:**
+        ```bash
+        brew install tesseract
+        ```
+        
+        **Linux:**
+        ```bash
+        sudo apt update
+        sudo apt install tesseract-ocr
+        sudo apt install tesseract-ocr-por  # Para português
+        ```
+        """)
+    
+    st.subheader("Verificação do Processamento de PDF")
+    if pdf_processor == "pdf2image":
+        st.info("Usando pdf2image com Poppler para processamento de PDFs.")
+        try:
+            pdf2image.pdfinfo_from_bytes(b"%PDF-1.0\n1 0 obj<</Pages 2 0 R>>/endobj/trailer<</Root 1 0 R>>")
+            st.success("✅ Poppler está instalado e configurado corretamente.")
+        except Exception as e:
+            st.error(f"❌ Poppler não está configurado corretamente: {str(e)}")
+            st.info("""
+            Para instalar o Poppler:
+            
+            **Windows:**
+            1. Baixe em https://github.com/oschwartz10612/poppler-windows/releases/
+            2. Extraia e adicione a pasta bin ao PATH
+            
+            **macOS:**
+            ```bash
+            brew install poppler
+            ```
+            
+            **Linux:**
+            ```bash
+            sudo apt install poppler-utils
+            ```
+            """)
+    elif pdf_processor == "pymupdf":
+        st.success("✅ Usando PyMuPDF para processamento de PDFs (alternativa ao Poppler).")
+    else:
+        st.error("❌ Nenhum processador de PDF disponível.")
+        st.info("""
+        Para processamento de PDFs, instale uma das opções:
+        
+        **Opção 1: pdf2image + Poppler (recomendado)**
+        ```bash
+        pip install pdf2image
+        ```
+        + Instalar Poppler (veja instruções acima)
+        
+        **Opção 2: PyMuPDF (alternativa)**
+        ```bash
+        pip install pymupdf
+        ```
+        """)
+    
+    # Exibe informações sobre as bibliotecas carregadas
+    st.subheader("Bibliotecas carregadas")
+    st.code("""
+    streamlit==1.22.0+
+    pillow==9.0.0+
+    pytesseract==0.3.10+
+    pdf2image==1.16.3+ (ou PyMuPDF)
+    openai==1.3.0+
+    requests==2.28.0+
+    """)
+
+# Rodapé
+st.markdown("---")
+st.markdown(
+    """<div style="text-align: center; color: #666;">
+    <p>🔮 Oráculo - Análise Inteligente de Documentos do SharePoint</p>
+    <p style="font-size: 0.8em;">Desenvolvido para facilitar o acesso e interpretação de documentos.</p>
+    </div>""",
+    unsafe_allow_html=True
+)
