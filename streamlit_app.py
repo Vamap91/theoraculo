@@ -1,6 +1,6 @@
 """
 ORÁCULO - Análise Inteligente de Documentos do SharePoint
-Aplicação principal que conecta SharePoint, OCR e IA para análise de documentos.
+Aplicação principal adaptada para estrutura hierárquica do Guia Rápido da Carglass.
 """
 
 import os
@@ -9,10 +9,11 @@ import platform
 import streamlit as st
 import requests
 import io
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 import time
 from openai import OpenAI
+import numpy as np
 
 # Configuração para o Poppler (necessário para PDFs) - SOLUÇÃO DO ERRO
 if platform.system() == "Windows":
@@ -29,22 +30,29 @@ if platform.system() == "Windows":
             os.environ["PATH"] = path + os.pathsep + os.environ["PATH"]
             break
 
-# Tenta importar o módulo pdf2image
+# Tenta importar o módulo PyMuPDF primeiro (prioritário)
 try:
-    import pdf2image
-    pdf_processor = "pdf2image"
+    import fitz  # PyMuPDF
+    pdf_processor = "pymupdf"
 except ImportError:
     pdf_processor = None
-    st.warning("Módulo pdf2image não está instalado. Tentando alternativa...")
+    st.warning("PyMuPDF não está instalado. Tentando alternativa...")
 
-# Se pdf2image falhar, tenta usar PyMuPDF como alternativa
+# Se PyMuPDF falhar, tenta usar pdf2image
 if pdf_processor is None:
     try:
-        import fitz  # PyMuPDF
-        pdf_processor = "pymupdf"
+        import pdf2image
+        pdf_processor = "pdf2image"
     except ImportError:
         pdf_processor = None
-        st.error("Nenhum processador de PDF disponível. Instale pdf2image ou pymupdf.")
+        st.error("Nenhum processador de PDF disponível. Instale pymupdf ou pdf2image.")
+
+# Tenta importar python-magic para detecção de tipos de arquivo
+try:
+    import magic
+    has_magic = True
+except ImportError:
+    has_magic = False
 
 # Configuração da página Streamlit
 st.set_page_config(
@@ -83,6 +91,19 @@ with st.sidebar:
         help="Selecione o idioma principal dos documentos"
     )
     
+    # Configuração de pré-processamento de imagem
+    st.subheader("Pré-processamento de imagem")
+    use_preprocessing = st.checkbox("Aplicar pré-processamento de imagem", value=True,
+                                    help="Melhora a qualidade do OCR em imagens")
+    
+    # Exibe opções avançadas se o pré-processamento estiver ativado
+    if use_preprocessing:
+        preprocessing_options = st.multiselect(
+            "Técnicas de pré-processamento:",
+            options=["Aumentar contraste", "Escala de cinza", "Nitidez", "Remover ruído"],
+            default=["Aumentar contraste", "Escala de cinza", "Nitidez"]
+        )
+    
     # Configuração do modelo de IA
     st.subheader("Configuração da IA")
     ai_model = st.selectbox(
@@ -93,28 +114,34 @@ with st.sidebar:
     
     st.divider()
     
-    # Verifica o status do Poppler
+    # Verifica o status do sistema
     st.subheader("Status do Sistema")
     
-    if pdf_processor == "pdf2image":
+    # Verifica Tesseract OCR
+    try:
+        tesseract_version = pytesseract.get_tesseract_version()
+        st.success(f"✅ Tesseract OCR v{tesseract_version} instalado")
+    except:
+        st.error("❌ Tesseract OCR não encontrado")
+    
+    # Verifica processador de PDF
+    if pdf_processor == "pymupdf":
+        st.success("✅ PyMuPDF está sendo usado para PDFs")
+    elif pdf_processor == "pdf2image":
         try:
-            # Verifica se o Poppler está configurado corretamente
             pdf2image.pdfinfo_from_bytes(b"%PDF-1.0\n1 0 obj<</Pages 2 0 R>>/endobj/trailer<</Root 1 0 R>>")
-            st.success("✅ Poppler está instalado e configurado corretamente.")
+            st.success("✅ Poppler está instalado corretamente")
         except Exception as e:
-            st.error(f"⚠️ Poppler não está configurado corretamente: {str(e)}")
-            st.info("Consulte as instruções para instalar o Poppler.")
-    elif pdf_processor == "pymupdf":
-        st.success("✅ PyMuPDF está sendo usado para processamento de PDFs.")
+            st.error(f"⚠️ Poppler não está configurado corretamente")
     else:
-        st.error("❌ Nenhum processador de PDF disponível.")
+        st.error("❌ Nenhum processador de PDF disponível")
     
     # Informações do projeto
     st.markdown("### 📋 Sobre o Projeto")
     st.markdown("""
     **Oráculo** é uma ferramenta que:
     - Conecta ao SharePoint via Microsoft Graph API
-    - Baixa documentos visuais (imagens e PDFs)
+    - Baixa documentos visuais (principalmente imagens)
     - Extrai texto via OCR
     - Responde perguntas usando IA
     """)
@@ -197,9 +224,17 @@ def listar_todos_os_arquivos(token, drive_id, caminho_pasta="/", progress_bar=No
                     
                 if item.get("folder"):
                     nova_pasta = f"{caminho_pasta}/{item['name']}".replace("//", "/")
+                    # Adiciona nível hierárquico à pasta
+                    nivel = nova_pasta.count('/')
+                    item['_nivel_hierarquico'] = nivel
+                    
                     sub_arquivos = listar_todos_os_arquivos(token, drive_id, nova_pasta, limite=limite)
                     arquivos.extend(sub_arquivos)
                 else:
+                    # Adiciona nível hierárquico aos arquivos
+                    nivel = caminho_pasta.count('/')
+                    item['_nivel_hierarquico'] = nivel
+                    item['_caminho_pasta'] = caminho_pasta
                     arquivos.append(item)
                 
                 # Atualiza a barra de progresso
@@ -221,10 +256,14 @@ def listar_todos_os_arquivos(token, drive_id, caminho_pasta="/", progress_bar=No
     
     return arquivos
 
-def baixar_arquivo(token, download_url, nome_arquivo, pasta_destino=DATA_DIR):
+def baixar_arquivo(token, download_url, nome_arquivo, caminho_pasta="/", pasta_destino=DATA_DIR):
     """Baixa um único arquivo e retorna o caminho local"""
     headers = {"Authorization": f"Bearer {token}"}
-    caminho_local = os.path.join(pasta_destino, nome_arquivo)
+    # Preserva a informação do caminho da pasta no nome do arquivo
+    nome_arquivo_salvo = f"{caminho_pasta.replace('/', '_')}_{nome_arquivo}" if caminho_pasta != "/" else nome_arquivo
+    nome_arquivo_salvo = nome_arquivo_salvo.replace(':', '_').replace('?', '_').replace('*', '_')
+    
+    caminho_local = os.path.join(pasta_destino, nome_arquivo_salvo)
     
     try:
         response = requests.get(download_url, headers=headers, timeout=30)
@@ -232,40 +271,40 @@ def baixar_arquivo(token, download_url, nome_arquivo, pasta_destino=DATA_DIR):
             # Salva o arquivo localmente
             with open(caminho_local, "wb") as f:
                 f.write(response.content)
-            return caminho_local, response.content
+            return caminho_local, response.content, caminho_pasta
         else:
             st.warning(f"Erro ao baixar {nome_arquivo}: {response.status_code}")
-            return None, None
+            return None, None, None
     except Exception as e:
         st.warning(f"Erro ao baixar {nome_arquivo}: {str(e)}")
-        return None, None
+        return None, None, None
 
-def baixar_arquivos(token, arquivos, pasta="data", extensoes_validas=None):
-    """Baixa múltiplos arquivos do SharePoint"""
-    if extensoes_validas is None:
-        extensoes_validas = [".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".txt"]
+def pre_processar_imagem(img):
+    """Aplica técnicas de pré-processamento para melhorar a qualidade do OCR"""
+    if not use_preprocessing:
+        return img
+    
+    # Converte para RGB se tiver canal alpha
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+    
+    # Aplica as técnicas selecionadas
+    if "Escala de cinza" in preprocessing_options:
+        img = img.convert('L')
+    
+    if "Aumentar contraste" in preprocessing_options:
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+    
+    if "Remover ruído" in preprocessing_options:
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+    
+    if "Nitidez" in preprocessing_options:
+        img = img.filter(ImageFilter.SHARPEN)
+    
+    return img
 
-    headers = {"Authorization": f"Bearer {token}"}
-    if not os.path.exists(pasta):
-        os.makedirs(pasta)
-
-    caminhos = []
-    for arq in arquivos:
-        nome = arq.get("name", "")
-        link = arq.get("@microsoft.graph.downloadUrl")
-
-        if any(nome.lower().endswith(ext) for ext in extensoes_validas) and link:
-            local = os.path.join(pasta, nome)
-            try:
-                r = requests.get(link, headers=headers, timeout=30)
-                with open(local, "wb") as f:
-                    f.write(r.content)
-                caminhos.append(local)
-            except Exception as e:
-                st.warning(f"Erro ao baixar {nome}: {e}")
-    return caminhos
-
-def extrair_texto_de_imagem(img_data_or_path):
+def extrair_texto_de_imagem(img_data_or_path, nivel_hierarquico=0, caminho_pasta="/"):
     """Extrai texto de uma imagem usando OCR"""
     try:
         # Se for um caminho para arquivo
@@ -273,84 +312,47 @@ def extrair_texto_de_imagem(img_data_or_path):
             if not os.path.exists(img_data_or_path):
                 return ""
             img = Image.open(img_data_or_path)
+            
+            # Extrai o nome do arquivo para análise
+            nome_arquivo = os.path.basename(img_data_or_path)
         # Se for conteúdo binário
         elif isinstance(img_data_or_path, bytes):
             img = Image.open(io.BytesIO(img_data_or_path))
+            nome_arquivo = "arquivo_binario.png"
         # Se já for um objeto PIL Image
         elif isinstance(img_data_or_path, Image.Image):
             img = img_data_or_path
+            nome_arquivo = "imagem.png"
         else:
             return ""
         
         # Aplica pré-processamento para melhorar a qualidade do OCR
-        # Converte para RGB se necessário (para imagens PNG com transparência)
-        if img.mode == 'RGBA':
-            img = img.convert('RGB')
+        img = pre_processar_imagem(img)
             
         # Extrai o texto usando pytesseract
         texto = pytesseract.image_to_string(img, lang=ocr_language)
-        return texto.strip() if texto else "[imagem sem texto legível]"
+        texto_limpo = texto.strip() if texto else "[imagem sem texto legível]"
+        
+        # Adiciona informações de contexto hierárquico
+        if nivel_hierarquico > 0 or caminho_pasta != "/":
+            prefixo = f"[Nível {nivel_hierarquico}]"
+            if caminho_pasta != "/":
+                prefixo += f" [Caminho: {caminho_pasta}]"
+                
+            # Identifica menus e botões baseados no nome do arquivo e conteúdo
+            if "guia" in nome_arquivo.lower() and "pratico" in nome_arquivo.lower():
+                prefixo += " [Menu: Guia Prático]"
+            elif "comunicado" in texto_limpo.lower():
+                prefixo += " [Tipo: Comunicado]"
+                
+            texto_limpo = f"{prefixo}\n{texto_limpo}"
+        
+        return texto_limpo
     except Exception as e:
         st.error(f"Erro ao processar imagem com OCR: {str(e)}")
-        return ""
+        return f"[erro ao processar imagem: {str(e)}]"
 
-def extrair_texto_de_pdf():
-    """Função que seleciona o método correto para extrair texto de PDFs"""
-    if pdf_processor == "pdf2image":
-        return extrair_texto_de_pdf_com_pdf2image
-    elif pdf_processor == "pymupdf":
-        return extrair_texto_de_pdf_com_pymupdf
-    else:
-        st.error("Nenhum processador de PDF disponível.")
-        return lambda x: "[Processamento de PDF não disponível]"
-
-def extrair_texto_de_pdf_com_pdf2image(pdf_data_or_path):
-    """Extrai texto de um PDF usando pdf2image e OCR"""
-    try:
-        # Se for um caminho para arquivo
-        if isinstance(pdf_data_or_path, str):
-            if not os.path.exists(pdf_data_or_path):
-                return ""
-            with open(pdf_data_or_path, 'rb') as f:
-                pdf_data = f.read()
-        # Se for conteúdo binário
-        elif isinstance(pdf_data_or_path, bytes):
-            pdf_data = pdf_data_or_path
-        else:
-            return ""
-        
-        # Cria um arquivo temporário para o PDF
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_data)
-            temp_pdf_path = temp_pdf.name
-        
-        try:
-            # Converte PDF para imagens
-            imagens = pdf2image.convert_from_path(temp_pdf_path, dpi=300)
-        except Exception as e:
-            os.unlink(temp_pdf_path)
-            st.error(f"Erro ao converter PDF para imagens: {str(e)}")
-            if "Unable to get page count" in str(e):
-                st.info("Este erro indica um problema com o Poppler. Veja as instruções na documentação.")
-            return f"[erro ao processar PDF: {str(e)}]"
-        
-        # Remove o arquivo temporário
-        os.unlink(temp_pdf_path)
-        
-        # Extrai texto de cada página
-        textos = []
-        for i, img in enumerate(imagens):
-            texto_pagina = extrair_texto_de_imagem(img)
-            if texto_pagina and texto_pagina != "[imagem sem texto legível]":
-                textos.append(f"--- Página {i+1} ---\n{texto_pagina}")
-        
-        # Combina o texto de todas as páginas
-        return "\n\n".join(textos) if textos else "[PDF sem texto legível]"
-    except Exception as e:
-        st.error(f"Erro ao processar PDF: {str(e)}")
-        return f"[erro ao processar PDF: {str(e)}]"
-
-def extrair_texto_de_pdf_com_pymupdf(pdf_data_or_path):
+def extrair_texto_de_pdf_com_pymupdf(pdf_data_or_path, nivel_hierarquico=0, caminho_pasta="/"):
     """Extrai texto de um PDF usando PyMuPDF (alternativa ao Poppler)"""
     try:
         import fitz  # PyMuPDF
@@ -359,9 +361,12 @@ def extrair_texto_de_pdf_com_pymupdf(pdf_data_or_path):
         if isinstance(pdf_data_or_path, str):
             if not os.path.exists(pdf_data_or_path):
                 return ""
+            # Extrai o nome do arquivo para análise
+            nome_arquivo = os.path.basename(pdf_data_or_path)
             doc = fitz.open(pdf_data_or_path)
         # Se for conteúdo binário
         elif isinstance(pdf_data_or_path, bytes):
+            nome_arquivo = "arquivo_binario.pdf"
             doc = fitz.open(stream=pdf_data_or_path, filetype="pdf")
         else:
             return ""
@@ -391,59 +396,325 @@ def extrair_texto_de_pdf_com_pymupdf(pdf_data_or_path):
                     textos.append(f"--- Página {i+1} (OCR) ---\n{texto_ocr}")
         
         # Combina o texto de todas as páginas
-        return "\n\n".join(textos) if textos else "[PDF sem texto legível]"
+        texto_combinado = "\n\n".join(textos) if textos else "[PDF sem texto legível]"
+        
+        # Adiciona informações de contexto hierárquico
+        if nivel_hierarquico > 0 or caminho_pasta != "/":
+            prefixo = f"[Nível {nivel_hierarquico}]"
+            if caminho_pasta != "/":
+                prefixo += f" [Caminho: {caminho_pasta}]"
+                
+            # Identifica tipos de documento baseados no nome
+            if "guia" in nome_arquivo.lower():
+                prefixo += " [Tipo: Guia]"
+            elif "comunicado" in nome_arquivo.lower():
+                prefixo += " [Tipo: Comunicado]"
+                
+            texto_combinado = f"{prefixo}\n{texto_combinado}"
+        
+        return texto_combinado
     except Exception as e:
         st.error(f"Erro ao processar PDF com PyMuPDF: {str(e)}")
         return f"[erro ao processar PDF: {str(e)}]"
 
-def extrair_texto_de_arquivo(caminho_ou_conteudo, nome_arquivo=None):
-    """Extrai texto de um arquivo baseado em sua extensão"""
-    # Determina a extensão
+def extrair_texto_de_pdf_com_pdf2image(pdf_data_or_path, nivel_hierarquico=0, caminho_pasta="/"):
+    """Extrai texto de um PDF usando pdf2image e OCR"""
+    try:
+        # Se for um caminho para arquivo
+        if isinstance(pdf_data_or_path, str):
+            if not os.path.exists(pdf_data_or_path):
+                return ""
+            nome_arquivo = os.path.basename(pdf_data_or_path)
+            with open(pdf_data_or_path, 'rb') as f:
+                pdf_data = f.read()
+        # Se for conteúdo binário
+        elif isinstance(pdf_data_or_path, bytes):
+            pdf_data = pdf_data_or_path
+            nome_arquivo = "arquivo_binario.pdf"
+        else:
+            return ""
+        
+        # Cria um arquivo temporário para o PDF
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_data)
+            temp_pdf_path = temp_pdf.name
+        
+        try:
+            # Converte PDF para imagens
+            imagens = pdf2image.convert_from_path(temp_pdf_path, dpi=300)
+        except Exception as e:
+            os.unlink(temp_pdf_path)
+            # Se falhar com Poppler, tenta processar diretamente como imagem
+            if "Unable to get page count" in str(e):
+                st.info("Tentando processar o PDF como imagem devido a problemas com o Poppler.")
+                try:
+                    return extrair_texto_de_imagem(pdf_data, nivel_hierarquico, caminho_pasta)
+                except:
+                    pass
+            return f"[erro ao processar PDF: {str(e)}]"
+        
+        # Remove o arquivo temporário
+        os.unlink(temp_pdf_path)
+        
+        # Extrai texto de cada página
+        textos = []
+        for i, img in enumerate(imagens):
+            texto_pagina = extrair_texto_de_imagem(img)
+            if texto_pagina and texto_pagina != "[imagem sem texto legível]":
+                textos.append(f"--- Página {i+1} ---\n{texto_pagina}")
+        
+        # Combina o texto de todas as páginas
+        texto_combinado = "\n\n".join(textos) if textos else "[PDF sem texto legível]"
+        
+        # Adiciona informações de contexto hierárquico
+        if nivel_hierarquico > 0 or caminho_pasta != "/":
+            prefixo = f"[Nível {nivel_hierarquico}]"
+            if caminho_pasta != "/":
+                prefixo += f" [Caminho: {caminho_pasta}]"
+                
+            # Identifica tipos de documento baseados no nome
+            if "guia" in nome_arquivo.lower():
+                prefixo += " [Tipo: Guia]"
+            elif "comunicado" in nome_arquivo.lower():
+                prefixo += " [Tipo: Comunicado]"
+                
+            texto_combinado = f"{prefixo}\n{texto_combinado}"
+            
+        return texto_combinado
+    except Exception as e:
+        st.error(f"Erro ao processar PDF com pdf2image: {str(e)}")
+        return f"[erro ao processar PDF: {str(e)}]"
+
+def detectar_tipo_arquivo(conteudo_binario):
+    """Detecta o tipo MIME de um arquivo usando python-magic, se disponível"""
+    if has_magic and isinstance(conteudo_binario, bytes):
+        try:
+            return magic.from_buffer(conteudo_binario, mime=True)
+        except:
+            pass
+    return None
+
+def extrair_texto_de_arquivo(caminho_ou_conteudo, nome_arquivo=None, nivel_hierarquico=0, caminho_pasta="/"):
+    """Extrai texto de um arquivo com detecção inteligente de formato"""
+    # Determina a extensão e o nome do arquivo
     if isinstance(caminho_ou_conteudo, str) and os.path.exists(caminho_ou_conteudo):
-        nome = caminho_ou_conteudo.lower()
+        nome = os.path.basename(caminho_ou_conteudo).lower()
     else:
         nome = nome_arquivo.lower() if nome_arquivo else ""
     
-    # Extrai texto baseado no tipo de arquivo
-    if nome.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-        return extrair_texto_de_imagem(caminho_ou_conteudo)
-    elif nome.endswith('.pdf'):
-        pdf_extractor = extrair_texto_de_pdf()
-        return pdf_extractor(caminho_ou_conteudo)
-    elif nome.endswith('.txt'):
-        # Se for um caminho para arquivo de texto
-        if isinstance(caminho_ou_conteudo, str) and os.path.exists(caminho_ou_conteudo):
+    # Detecta o tipo real do arquivo, se possível
+    mime_type = None
+    if isinstance(caminho_ou_conteudo, bytes):
+        mime_type = detectar_tipo_arquivo(caminho_ou_conteudo)
+    
+    # Define a estratégia com base no tipo MIME ou extensão
+    if mime_type:
+        if 'image' in mime_type:
+            return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+        elif 'pdf' in mime_type:
+            if pdf_processor == "pymupdf":
+                return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+            else:
+                return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+        elif 'text' in mime_type:
+            # Extrai texto de arquivos de texto
             try:
-                with open(caminho_ou_conteudo, 'r', encoding='utf-8', errors='ignore') as f:
-                    return f.read()
+                if isinstance(caminho_ou_conteudo, bytes):
+                    texto = caminho_ou_conteudo.decode('utf-8', errors='ignore')
+                else:
+                    with open(caminho_ou_conteudo, 'r', encoding='utf-8', errors='ignore') as f:
+                        texto = f.read()
+                
+                # Adiciona informações de contexto hierárquico
+                if nivel_hierarquico > 0 or caminho_pasta != "/":
+                    prefixo = f"[Nível {nivel_hierarquico}]"
+                    if caminho_pasta != "/":
+                        prefixo += f" [Caminho: {caminho_pasta}]"
+                    texto = f"{prefixo}\n{texto}"
+                
+                return texto
             except Exception as e:
                 return f"[erro ao ler arquivo de texto: {str(e)}]"
-        # Se for conteúdo binário de um arquivo de texto
-        elif isinstance(caminho_ou_conteudo, bytes):
+    else:
+        # Determina o tipo baseado na extensão do arquivo
+        if nome.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+            return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+        elif nome.endswith('.pdf'):
+            # Tenta primeiro com o processador de PDF configurado
             try:
-                return caminho_ou_conteudo.decode('utf-8', errors='ignore')
+                if pdf_processor == "pymupdf":
+                    return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+                else:
+                    return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
             except Exception as e:
-                return f"[erro ao decodificar arquivo de texto: {str(e)}]"
+                # Se falhar, tenta processar como imagem
+                st.warning(f"Erro ao processar PDF, tentando como imagem: {str(e)}")
+                return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+        elif nome.endswith(('.txt', '.csv', '.md')):
+            # Extrai texto de arquivos de texto
+            try:
+                if isinstance(caminho_ou_conteudo, str) and os.path.exists(caminho_ou_conteudo):
+                    with open(caminho_ou_conteudo, 'r', encoding='utf-8', errors='ignore') as f:
+                        texto = f.read()
+                elif isinstance(caminho_ou_conteudo, bytes):
+                    texto = caminho_ou_conteudo.decode('utf-8', errors='ignore')
+                else:
+                    return "[formato de arquivo não suportado]"
+                
+                # Adiciona informações de contexto hierárquico
+                if nivel_hierarquico > 0 or caminho_pasta != "/":
+                    prefixo = f"[Nível {nivel_hierarquico}]"
+                    if caminho_pasta != "/":
+                        prefixo += f" [Caminho: {caminho_pasta}]"
+                    texto = f"{prefixo}\n{texto}"
+                
+                return texto
+            except Exception as e:
+                return f"[erro ao ler arquivo de texto: {str(e)}]"
+        else:
+            # Para extensões desconhecidas, tenta primeiro como imagem
+            try:
+                return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+            except:
+                # Se falhar, tenta como PDF
+                try:
+                    if pdf_processor == "pymupdf":
+                        return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+                    else:
+                        return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+                except:
+                    pass
     
-    return "[formato de arquivo não suportado]"  # Retorna string vazia para tipos não suportados
+    # Se todas as tentativas falharem
+    return f"[não foi possível extrair texto do formato: {nome}]"
+
+def extrair_info_contexto(texto):
+    """Extrai informações de contexto do texto processado"""
+    nivel = 0
+    caminho = "/"
+    tipo = "Desconhecido"
+    menu = ""
+    
+    # Extrai informações das tags de contexto
+    if "[Nível " in texto:
+        try:
+            nivel_str = texto.split("[Nível ")[1].split("]")[0]
+            nivel = int(nivel_str)
+        except:
+            pass
+    
+    if "[Caminho: " in texto:
+        try:
+            caminho = texto.split("[Caminho: ")[1].split("]")[0]
+        except:
+            pass
+    
+    if "[Tipo: " in texto:
+        try:
+            tipo = texto.split("[Tipo: ")[1].split("]")[0]
+        except:
+            pass
+    
+    if "[Menu: " in texto:
+        try:
+            menu = texto.split("[Menu: ")[1].split("]")[0]
+        except:
+            pass
+    
+    return {
+        "nivel": nivel,
+        "caminho": caminho,
+        "tipo": tipo,
+        "menu": menu
+    }
 
 def processar_pergunta(pergunta, conteudo_extraido, modelo_ia="gpt-3.5-turbo"):
-    """Processa uma pergunta usando a API da OpenAI"""
+    """Processa uma pergunta considerando a estrutura hierárquica dos dados"""
     try:
-        contexto = "\n\n---\n\n".join(conteudo_extraido)
+        # Organiza o conteúdo por níveis hierárquicos
+        conteudo_por_nivel = {}
+        info_contextual = []
         
+        for i, texto in enumerate(conteudo_extraido):
+            # Extrai informações de contexto
+            info = extrair_info_contexto(texto)
+            info["indice"] = i
+            info["texto"] = texto
+            info_contextual.append(info)
+            
+            # Agrupa por nível hierárquico
+            nivel = info["nivel"]
+            if nivel not in conteudo_por_nivel:
+                conteudo_por_nivel[nivel] = []
+            conteudo_por_nivel[nivel].append(texto)
+        
+        # Ordena os níveis hierárquicos
+        niveis_ordenados = sorted(conteudo_por_nivel.keys())
+        
+        # Monta o contexto hierárquico ordenado
+        contexto_ordenado = []
+        for nivel in niveis_ordenados:
+            contexto_ordenado.extend(conteudo_por_nivel[nivel])
+        
+        # Se não tiver estrutura hierárquica, usa o conteúdo original
+        if not contexto_ordenado:
+            contexto_ordenado = conteudo_extraido
+        
+        # Junta o conteúdo com separadores claros
+        contexto = "\n\n---DOCUMENTO HIERÁRQUICO---\n\n".join(contexto_ordenado)
+        
+        # Prepara informações adicionais de contexto para melhorar a resposta da IA
+        info_adicional = "Informações sobre a estrutura hierárquica dos documentos:\n"
+        for nivel in niveis_ordenados:
+            num_docs = len(conteudo_por_nivel[nivel])
+            info_adicional += f"- Nível {nivel}: {num_docs} documento(s)\n"
+        
+        # Agrupa também por tipo de documento
+        tipos = {}
+        for info in info_contextual:
+            tipo = info["tipo"]
+            if tipo not in tipos:
+                tipos[tipo] = 0
+            tipos[tipo] += 1
+        
+        for tipo, contagem in tipos.items():
+            if tipo != "Desconhecido":
+                info_adicional += f"- Tipo '{tipo}': {contagem} documento(s)\n"
+        
+        # Identifica possíveis menus e botões
+        menus = {}
+        for info in info_contextual:
+            menu = info["menu"]
+            if menu and menu not in menus:
+                menus[menu] = 0
+            if menu:
+                menus[menu] += 1
+        
+        for menu, contagem in menus.items():
+            info_adicional += f"- Menu '{menu}': {contagem} documento(s)\n"
+        
+        # Monta o prompt para a IA
         prompt = f"""
-Você é um assistente inteligente especializado em analisar e responder com base em comunicados e documentos operacionais.
+Você é um assistente inteligente especializado em analisar o conteúdo do SharePoint da Carglass.
+
+INFORMAÇÕES SOBRE A ESTRUTURA HIERÁRQUICA:
+Os documentos a seguir têm uma estrutura hierárquica com múltiplos níveis:
+- Nível 1: Menu principal com botões e opções como "Guia Rápido"
+- Nível 2: Subcategorias com botões como "Seguradoras", "Assistências", etc.
+- Nível 3: Conteúdo detalhado com procedimentos, contatos e informações específicas
+
+{info_adicional}
 
 CONTEXTO DOS DOCUMENTOS:
 {contexto}
 
 INSTRUÇÕES:
 1. Baseie sua resposta EXCLUSIVAMENTE nas informações contidas nos documentos fornecidos.
-2. Se a informação não estiver presente nos documentos, responda claramente: "Não encontrei essa informação nos documentos fornecidos."
-3. Se os documentos contiverem informações parciais, informe quais partes você encontrou e quais estão faltando.
-4. Forneça a resposta de forma clara, concisa e estruturada.
-5. Quando relevante, indique de qual documento ou seção a informação foi extraída.
+2. Considere a estrutura hierárquica ao responder, indicando de qual seção/nível a informação veio.
+3. Se a informação não estiver presente nos documentos, responda claramente: "Não encontrei essa informação nos documentos fornecidos."
+4. Se os documentos contiverem informações parciais, informe quais partes você encontrou e quais estão faltando.
+5. Forneça a resposta de forma clara, concisa e estruturada.
+6. Quando aplicável, mencione o caminho de navegação para encontrar as informações no sistema original.
 
 PERGUNTA DO USUÁRIO: {pergunta}
 """
@@ -452,7 +723,7 @@ PERGUNTA DO USUÁRIO: {pergunta}
         resposta = client.chat.completions.create(
             model=modelo_ia,
             messages=[
-                {"role": "system", "content": "Você é um assistente especializado que responde apenas com base nos documentos fornecidos."},
+                {"role": "system", "content": "Você é um assistente especializado no sistema de Guia Rápido da Carglass que responde com base nos documentos fornecidos."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3  # Menor temperatura para respostas mais precisas
@@ -525,8 +796,23 @@ with st.expander("📚 Bibliotecas do SharePoint", expanded=True):
             
             st.success(f"✅ Encontrados {total_arquivos} arquivos, sendo {total_validos} com formato suportado para OCR.")
             
+            # Agrupa arquivos por nível hierárquico
+            arquivos_por_nivel = {}
+            for arq in arquivos_validos:
+                nivel = arq.get('_nivel_hierarquico', 0)
+                if nivel not in arquivos_por_nivel:
+                    arquivos_por_nivel[nivel] = []
+                arquivos_por_nivel[nivel].append(arq)
+            
+            # Mostra distribuição de arquivos por nível
+            if len(arquivos_por_nivel) > 1:
+                st.info("Distribuição de arquivos por nível hierárquico:")
+                for nivel, arquivos_nivel in sorted(arquivos_por_nivel.items()):
+                    st.text(f"Nível {nivel}: {len(arquivos_nivel)} arquivo(s)")
+            
             # Salva na session_state para não perder ao recarregar
             st.session_state['arquivos_validos'] = arquivos_validos
+            st.session_state['arquivos_por_nivel'] = arquivos_por_nivel
             st.session_state['biblioteca_selecionada'] = biblioteca_selecionada
             st.session_state['drive_id'] = drive_id
 
@@ -537,8 +823,28 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
     with st.expander("💾 Arquivos para Processamento", expanded=True):
         st.write(f"Biblioteca: **{st.session_state['biblioteca_selecionada']}**")
         
+        # Opção para filtrar por nível hierárquico
+        if 'arquivos_por_nivel' in st.session_state and len(st.session_state['arquivos_por_nivel']) > 1:
+            niveis_disponiveis = sorted(st.session_state['arquivos_por_nivel'].keys())
+            nivel_selecionado = st.multiselect(
+                "Filtrar por nível hierárquico:",
+                options=niveis_disponiveis,
+                default=niveis_disponiveis,
+                format_func=lambda x: f"Nível {x}"
+            )
+            
+            # Filtra arquivos pelos níveis selecionados
+            if nivel_selecionado:
+                arquivos_filtrados = []
+                for nivel in nivel_selecionado:
+                    arquivos_filtrados.extend(st.session_state['arquivos_por_nivel'][nivel])
+            else:
+                arquivos_filtrados = arquivos_validos
+        else:
+            arquivos_filtrados = arquivos_validos
+        
         # Exibe a lista de arquivos e permite seleção
-        nomes_arquivos = [arq.get("name", "Sem nome") for arq in arquivos_validos]
+        nomes_arquivos = [arq.get("name", "Sem nome") for arq in arquivos_filtrados]
         arquivos_selecionados = st.multiselect(
             "Selecione os arquivos para processamento:",
             options=nomes_arquivos,
@@ -565,20 +871,26 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
                         status_text.text(f"Processando {nome}... ({idx+1}/{len(arquivos_selecionados)})")
                         
                         # Encontra o arquivo na lista de arquivos válidos
-                        arquivo = next(a for a in arquivos_validos if a.get("name") == nome)
+                        arquivo = next(a for a in arquivos_filtrados if a.get("name") == nome)
                         download_url = arquivo.get("@microsoft.graph.downloadUrl")
+                        nivel_hierarquico = arquivo.get('_nivel_hierarquico', 0)
+                        caminho_pasta = arquivo.get('_caminho_pasta', '/')
                         
                         if download_url:
                             # Baixa o arquivo
-                            caminho_local, conteudo_binario = baixar_arquivo(token, download_url, nome)
+                            caminho_local, conteudo_binario, caminho = baixar_arquivo(
+                                token, download_url, nome, caminho_pasta
+                            )
                             
                             if caminho_local:
                                 # Tenta extrair texto do arquivo
-                                texto = extrair_texto_de_arquivo(conteudo_binario, nome)
+                                texto = extrair_texto_de_arquivo(
+                                    conteudo_binario, nome, nivel_hierarquico, caminho_pasta
+                                )
                                 
                                 if texto:
                                     # Adiciona à lista de conteúdos extraídos
-                                    conteudo_extraido.append(f"--- Documento: {nome} ---\n{texto}")
+                                    conteudo_extraido.append(texto)
                     
                     # Finaliza o progresso
                     progress_bar.progress(1.0)
@@ -593,11 +905,18 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
                 else:
                     st.success(f"✅ Texto extraído com sucesso de {len(conteudo_extraido)} arquivo(s)!")
                     
-                    # Mostra amostra do texto extraído (primeiros 500 caracteres)
-                    with st.expander("📝 Amostra do Texto Extraído"):
-                        for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
-                            st.markdown(f"**Documento {idx+1}:**")
-                            st.text(texto[:500] + "..." if len(texto) > 500 else texto)
+                    # Mostra amostra do texto extraído
+                    with st.expander("📝 Amostra do Texto Extraído", expanded=False):
+                        if conteudo_extraido:
+                            for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
+                                st.markdown(f"**Documento {idx+1}:**")
+                                if texto and len(texto) > 0:
+                                    preview = texto[:500] + "..." if len(texto) > 500 else texto
+                                    st.code(preview, language="text")
+                                else:
+                                    st.info("Este documento não contém texto extraível.")
+                        else:
+                            st.info("Nenhum conteúdo extraído para mostrar.")
                     
                     # Salva na session_state
                     st.session_state['conteudo_extraido'] = conteudo_extraido
@@ -605,7 +924,15 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
 # Interface para perguntas e respostas
 if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extraido']:
     st.header("🤖 Consulte o Oráculo")
-    st.markdown("Faça perguntas sobre os documentos e o Oráculo responderá com base no conteúdo extraído.")
+    st.markdown("""
+    Faça perguntas sobre os documentos e o Oráculo responderá com base no conteúdo extraído.
+    
+    **Exemplos de perguntas:**
+    - Quais são os procedimentos para atendimento?
+    - Como fazer a busca do cliente?
+    - Qual o telefone de contato?
+    - Quais assistências estão disponíveis?
+    """)
     
     # Campo para a pergunta
     pergunta = st.text_area("Digite sua pergunta:", height=100)
@@ -633,7 +960,7 @@ if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extrai
             if 'historico' not in st.session_state:
                 st.session_state['historico'] = []
             
-# Adiciona ao histórico (limitado aos últimos 5)
+            # Adiciona ao histórico (limitado aos últimos 5)
             st.session_state['historico'].insert(
                 0, {"pergunta": pergunta, "resposta": resposta}
             )
@@ -653,9 +980,11 @@ if 'historico' in st.session_state and st.session_state['historico']:
                 unsafe_allow_html=True
             )
 
-# Verifica instalação do Tesseract
+# Verificações diagnósticas
 with st.expander("🔧 Diagnósticos", expanded=False):
-    st.subheader("Verificação do Tesseract OCR")
+    st.subheader("Verificação do Sistema")
+    
+    # Tesseract OCR
     try:
         versao = pytesseract.get_tesseract_version()
         st.success(f"✅ Tesseract OCR versão {versao} instalado e configurado.")
@@ -687,9 +1016,11 @@ with st.expander("🔧 Diagnósticos", expanded=False):
         ```
         """)
     
-    st.subheader("Verificação do Processamento de PDF")
-    if pdf_processor == "pdf2image":
-        st.info("Usando pdf2image com Poppler para processamento de PDFs.")
+    # Processador de PDF
+    st.subheader("Processamento de PDF")
+    if pdf_processor == "pymupdf":
+        st.success("✅ Usando PyMuPDF para processamento de PDFs (recomendado).")
+    elif pdf_processor == "pdf2image":
         try:
             pdf2image.pdfinfo_from_bytes(b"%PDF-1.0\n1 0 obj<</Pages 2 0 R>>/endobj/trailer<</Root 1 0 R>>")
             st.success("✅ Poppler está instalado e configurado corretamente.")
@@ -711,43 +1042,41 @@ with st.expander("🔧 Diagnósticos", expanded=False):
             ```bash
             sudo apt install poppler-utils
             ```
+            
+            **Streamlit Cloud:**
+            Crie um arquivo packages.txt na raiz do projeto com o conteúdo:
+            ```
+            poppler-utils
+            ```
             """)
-    elif pdf_processor == "pymupdf":
-        st.success("✅ Usando PyMuPDF para processamento de PDFs (alternativa ao Poppler).")
     else:
         st.error("❌ Nenhum processador de PDF disponível.")
+    
+    # Python-magic (opcional)
+    st.subheader("Detecção de Tipo de Arquivo")
+    if has_magic:
+        st.success("✅ Python-magic está instalado para melhor detecção de tipo de arquivo.")
+    else:
+        st.warning("⚠️ Python-magic não está instalado. A detecção de tipo de arquivo será limitada à extensão.")
         st.info("""
-        Para processamento de PDFs, instale uma das opções:
+        Para instalar python-magic:
         
-        **Opção 1: pdf2image + Poppler (recomendado)**
         ```bash
-        pip install pdf2image
+        pip install python-magic
         ```
-        + Instalar Poppler (veja instruções acima)
         
-        **Opção 2: PyMuPDF (alternativa)**
+        No Windows também é necessário:
         ```bash
-        pip install pymupdf
+        pip install python-magic-bin
         ```
         """)
-    
-    # Exibe informações sobre as bibliotecas carregadas
-    st.subheader("Bibliotecas carregadas")
-    st.code("""
-    streamlit==1.22.0+
-    pillow==9.0.0+
-    pytesseract==0.3.10+
-    pdf2image==1.16.3+ (ou PyMuPDF)
-    openai==1.3.0+
-    requests==2.28.0+
-    """)
 
 # Rodapé
 st.markdown("---")
 st.markdown(
     """<div style="text-align: center; color: #666;">
     <p>🔮 Oráculo - Análise Inteligente de Documentos do SharePoint</p>
-    <p style="font-size: 0.8em;">Desenvolvido para facilitar o acesso e interpretação de documentos.</p>
+    <p style="font-size: 0.8em;">Desenvolvido para análise hierárquica do Guia Rápido da Carglass.</p>
     </div>""",
     unsafe_allow_html=True
 )
