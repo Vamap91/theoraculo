@@ -46,7 +46,7 @@ def listar_todos_os_arquivos(token, drive_id, caminho_pasta="/"):
         st.code(response.text)
     return arquivos
 
-# 💾 Baixar arquivos válidos (com extensão permitida)
+# 📥 Baixar arquivos válidos (com extensão permitida)
 def baixar_arquivos(token, arquivos, pasta="data", extensoes_validas=None):
     if extensoes_validas is None:
         extensoes_validas = [".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".txt"]
@@ -70,4 +70,5 @@ def baixar_arquivos(token, arquivos, pasta="data", extensoes_validas=None):
             except Exception as e:
                 st.warning(f"⚠️ Erro ao baixar {nome}: {e}")
     return caminhos
+
 
