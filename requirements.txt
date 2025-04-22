@@ -9,3 +9,6 @@ beautifulsoup4
 pytesseract
 python-docx
 PyMuPDF
+numpy
+pdf2image
+python-docx
