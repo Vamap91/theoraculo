@@ -100,3 +100,21 @@ Resposta:
         conteudo = resposta.choices[0].message.content.strip()
         st.success("💬 Resposta da IA:")
         st.markdown(conteudo)
+
+# 📂 Visualização dos arquivos salvos (NOVO BLOCO)
+st.markdown("---")
+st.subheader("🗂 Arquivos baixados do SharePoint")
+
+pasta = "data"
+if not os.path.exists(pasta):
+    st.info("A pasta `data/` ainda não foi criada.")
+else:
+    arquivos = os.listdir(pasta)
+    if arquivos:
+        for arq in arquivos:
+            caminho = os.path.join(pasta, arq)
+            st.markdown(f"📄 **{arq}**")
+            with open(caminho, "rb") as f:
+                st.download_button(label="📥 Baixar arquivo", data=f, file_name=arq)
+    else:
+        st.warning("Nenhum arquivo encontrado na pasta `data/`.")
