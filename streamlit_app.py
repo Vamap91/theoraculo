@@ -906,7 +906,7 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
                     st.success(f"✅ Texto extraído com sucesso de {len(conteudo_extraido)} arquivo(s)!")
                     
                     # Mostra amostra do texto extraído
-                    with st.expander("📝 Amostra do Texto Extraído", expanded=False):
+                    with st.expander("📝 Amostra do Texto Extraído"):
                         if conteudo_extraido:
                             for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
                                 st.markdown(f"**Documento {idx+1}:**")
