@@ -7,3 +7,5 @@ requests
 python-dotenv
 beautifulsoup4
 pytesseract
+python-docx
+PyMuPDF
