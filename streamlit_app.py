@@ -767,88 +767,85 @@ def get_all_site_content(token):
     # Busca todas as bibliotecas do site
     bibliotecas = listar_bibliotecas(token)
     
-    with st.progress(0.0, text="Analisando bibliotecas...") as progress_bar:
-        # Para cada biblioteca, exploramos seu conteúdo
-        for idx, biblioteca in enumerate(bibliotecas):
-            drive_id = biblioteca.get("id")
-            nome_biblioteca = biblioteca.get("name", "Sem Nome")
-            
-            if not drive_id:
-                continue
-                
-            progress_value = (idx / len(bibliotecas))
-            progress_bar.progress(progress_value, text=f"Processando biblioteca: {nome_biblioteca}")
-            
-            # Lista todos os arquivos dessa biblioteca, incluindo subpastas
-            arquivos = listar_todos_os_arquivos(token, drive_id)
-            
-            for arq in arquivos:
-                arq['_categoria'] = nome_biblioteca
-                
-                # Determina a seção com base no caminho da pasta e nome
-                caminho = arq.get('_caminho_pasta', '/').lower()
-                nome_arquivo = arq.get('name', '').lower()
-                
-                # Determina a seção através de várias regras
-                secao = "Outros"
-                
-                # Regra 1: Baseada no caminho da pasta
-                if "operacao" in caminho or "operações" in caminho or "operacoes" in caminho:
-                    secao = "Operações"
-                elif "monitoria" in caminho:
-                    secao = "Monitoria"
-                elif "treinamento" in caminho:
-                    secao = "Treinamento"
-                elif "acesso" in caminho and "rapido" in caminho:
-                    secao = "Acesso Rápido"
-                
-                # Regra 2: Baseada no nome da biblioteca
-                if "operacao" in nome_biblioteca.lower() or "operações" in nome_biblioteca.lower():
-                    secao = "Operações"
-                elif "monitoria" in nome_biblioteca.lower():
-                    secao = "Monitoria"
-                elif "treinamento" in nome_biblioteca.lower():
-                    secao = "Treinamento"
-                elif "acesso" in nome_biblioteca.lower() and "rapido" in nome_biblioteca.lower():
-                    secao = "Acesso Rápido"
-                
-                # Regra 3: Baseada no nome do arquivo
-                if "linha de frente" in nome_arquivo or "recontato" in nome_arquivo:
-                    if "vflr" in nome_arquivo:
-                        secao = "Operações"
-                    elif "rrsm" in nome_arquivo:
-                        secao = "Monitoria"
-                
-                # Regra 4: Verificar se é um comunicado
-                if "comunicado" in nome_arquivo:
-                    if "linha de frente" in caminho:
-                        secao = "Operações"
-                    elif "recontato" in caminho:
-                        secao = "Monitoria"
-                
-                # Adiciona o arquivo à seção apropriada
-                documentos_por_secao[secao].append(arq)
-                
-                # Atualiza estatísticas
-                estrutura_navegacao['categorias'][nome_biblioteca] = estrutura_navegacao['categorias'].get(nome_biblioteca, 0) + 1
-                
-                # Constrói árvore de navegação
-                caminho_navegacao = caminho.strip("/").split("/")
-                arvore = estrutura_navegacao['arvore_navegacao']
-                for parte in caminho_navegacao:
-                    if parte and parte not in arvore:
-                        arvore[parte] = {}
-                    if parte:
-                        arvore = arvore[parte]
+    progresso = st.progress(0.0)
+    st.text("Analisando bibliotecas...")
+    
+    # Para cada biblioteca, exploramos seu conteúdo
+    for idx, biblioteca in enumerate(bibliotecas):
+        drive_id = biblioteca.get("id")
+        nome_biblioteca = biblioteca.get("name", "Sem Nome")
         
-        # Procura especificamente por conteúdo na seção "Acesso Rápido"
-        # Esta é uma busca adicional para garantir que peguemos todos os links rápidos
-        try:
-            progress_bar.progress(0.9, text="Buscando links de acesso rápido...")
-            # Aqui poderíamos adicionar uma busca específica para o Acesso Rápido
-            # Mas isso depende da estrutura específica do SharePoint
-        except Exception as e:
-            st.warning(f"Erro ao buscar links de acesso rápido: {str(e)}")
+        if not drive_id:
+            continue
+            
+        progress_value = (idx / len(bibliotecas))
+        progresso.progress(progress_value)
+        st.text(f"Processando biblioteca: {nome_biblioteca}")
+        
+        # Lista todos os arquivos dessa biblioteca, incluindo subpastas
+        arquivos = listar_todos_os_arquivos(token, drive_id)
+        
+        for arq in arquivos:
+            arq['_categoria'] = nome_biblioteca
+            
+            # Determina a seção com base no caminho da pasta e nome
+            caminho = arq.get('_caminho_pasta', '/').lower()
+            nome_arquivo = arq.get('name', '').lower()
+            
+            # Determina a seção através de várias regras
+            secao = "Outros"
+            
+            # Regra 1: Baseada no caminho da pasta
+            if "operacao" in caminho or "operações" in caminho or "operacoes" in caminho:
+                secao = "Operações"
+            elif "monitoria" in caminho:
+                secao = "Monitoria"
+            elif "treinamento" in caminho:
+                secao = "Treinamento"
+            elif "acesso" in caminho and "rapido" in caminho:
+                secao = "Acesso Rápido"
+            
+            # Regra 2: Baseada no nome da biblioteca
+            if "operacao" in nome_biblioteca.lower() or "operações" in nome_biblioteca.lower():
+                secao = "Operações"
+            elif "monitoria" in nome_biblioteca.lower():
+                secao = "Monitoria"
+            elif "treinamento" in nome_biblioteca.lower():
+                secao = "Treinamento"
+            elif "acesso" in nome_biblioteca.lower() and "rapido" in nome_biblioteca.lower():
+                secao = "Acesso Rápido"
+            
+            # Regra 3: Baseada no nome do arquivo
+            if "linha de frente" in nome_arquivo or "linha_de_frente" in nome_arquivo or "recontato" in nome_arquivo:
+                if "vflr" in nome_arquivo:
+                    secao = "Operações"
+                elif "rrsm" in nome_arquivo:
+                    secao = "Monitoria"
+            
+            # Regra 4: Verificar se é um comunicado
+            if "comunicado" in nome_arquivo:
+                if "linha" in caminho and "frente" in caminho:
+                    secao = "Operações"
+                elif "recontato" in caminho:
+                    secao = "Monitoria"
+            
+            # Adiciona o arquivo à seção apropriada
+            documentos_por_secao[secao].append(arq)
+            
+            # Atualiza estatísticas
+            estrutura_navegacao['categorias'][nome_biblioteca] = estrutura_navegacao['categorias'].get(nome_biblioteca, 0) + 1
+            
+            # Constrói árvore de navegação
+            caminho_navegacao = caminho.strip("/").split("/")
+            arvore = estrutura_navegacao['arvore_navegacao']
+            for parte in caminho_navegacao:
+                if parte and parte not in arvore:
+                    arvore[parte] = {}
+                if parte:
+                    arvore = arvore[parte]
+    
+    progresso.progress(1.0)
+    st.text("Busca concluída!")
     
     # Armazena os resultados na session_state
     st.session_state['documentos_por_secao'] = documentos_por_secao
