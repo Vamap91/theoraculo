@@ -774,16 +774,29 @@ def get_all_site_content(token):
     for idx, biblioteca in enumerate(bibliotecas):
         drive_id = biblioteca.get("id")
         nome_biblioteca = biblioteca.get("name", "Sem Nome")
+        webUrl = biblioteca.get("webUrl", "")
         
         if not drive_id:
             continue
             
         progress_value = (idx / len(bibliotecas))
         progresso.progress(progress_value)
-        st.text(f"Processando biblioteca: {nome_biblioteca}")
+        st.text(f"Processando biblioteca: {nome_biblioteca} ({idx+1}/{len(bibliotecas)})")
         
-        # Lista todos os arquivos dessa biblioteca, incluindo subpastas
+        # Determina a seção com base no nome da biblioteca e URL
+        secao_biblioteca = "Outros"
+        nome_lower = nome_biblioteca.lower()
+        if "documento" in nome_lower or "documentos" in nome_lower:
+            # Esta é a biblioteca principal, contém todas as seções
+            secao_biblioteca = "Documentos"
+        elif "guia" in nome_lower and ("rápido" in nome_lower or "rapido" in nome_lower):
+            secao_biblioteca = "Guia Rápido"
+        
+        # Lista todos os arquivos dessa biblioteca, incluindo subpastas - SEM limite
         arquivos = listar_todos_os_arquivos(token, drive_id)
+        
+        # Log para depuração
+        st.text(f"Encontrados {len(arquivos)} arquivos na biblioteca {nome_biblioteca}")
         
         for arq in arquivos:
             arq['_categoria'] = nome_biblioteca
@@ -792,44 +805,37 @@ def get_all_site_content(token):
             caminho = arq.get('_caminho_pasta', '/').lower()
             nome_arquivo = arq.get('name', '').lower()
             
-            # Determina a seção através de várias regras
-            secao = "Outros"
+            # Por padrão, usa a seção da biblioteca
+            secao = secao_biblioteca
             
-            # Regra 1: Baseada no caminho da pasta
-            if "operacao" in caminho or "operações" in caminho or "operacoes" in caminho:
+            # Tenta determinar a seção específica
+            if "operac" in caminho or "operações" in caminho or "operacoes" in caminho:
                 secao = "Operações"
-            elif "monitoria" in caminho:
+            elif "monitor" in caminho:
                 secao = "Monitoria"
-            elif "treinamento" in caminho:
+            elif "trein" in caminho:
                 secao = "Treinamento"
-            elif "acesso" in caminho and "rapido" in caminho:
+            elif ("acesso" in caminho and "rapido" in caminho) or "acesso rápido" in caminho:
                 secao = "Acesso Rápido"
             
-            # Regra 2: Baseada no nome da biblioteca
-            if "operacao" in nome_biblioteca.lower() or "operações" in nome_biblioteca.lower():
+            # Verifica pelos nomes específicos que você mostrou nas imagens
+            if "linha de frente" in caminho or "linha de frente" in nome_arquivo:
                 secao = "Operações"
-            elif "monitoria" in nome_biblioteca.lower():
+            elif "recontato" in caminho or "recontato" in nome_arquivo:
                 secao = "Monitoria"
-            elif "treinamento" in nome_biblioteca.lower():
+            elif "manuais de procedimento" in caminho:
                 secao = "Treinamento"
-            elif "acesso" in nome_biblioteca.lower() and "rapido" in nome_biblioteca.lower():
-                secao = "Acesso Rápido"
             
-            # Regra 3: Baseada no nome do arquivo
-            if "linha de frente" in nome_arquivo or "linha_de_frente" in nome_arquivo or "recontato" in nome_arquivo:
-                if "vflr" in nome_arquivo:
-                    secao = "Operações"
-                elif "rrsm" in nome_arquivo:
-                    secao = "Monitoria"
-            
-            # Regra 4: Verificar se é um comunicado
+            # Verifica comunicados
             if "comunicado" in nome_arquivo:
-                if "linha" in caminho and "frente" in caminho:
-                    secao = "Operações"
-                elif "recontato" in caminho:
-                    secao = "Monitoria"
+                if "22/04" in nome_arquivo or "22_04" in nome_arquivo:
+                    secao = "Operações"  # Comunicado de Linha de Frente
+                elif "23/04" in nome_arquivo or "23_04" in nome_arquivo:
+                    secao = "Monitoria"  # Comunicado de Recontato
             
             # Adiciona o arquivo à seção apropriada
+            if secao not in documentos_por_secao:
+                documentos_por_secao[secao] = []
             documentos_por_secao[secao].append(arq)
             
             # Atualiza estatísticas
@@ -850,6 +856,10 @@ def get_all_site_content(token):
     # Armazena os resultados na session_state
     st.session_state['documentos_por_secao'] = documentos_por_secao
     st.session_state['estrutura_navegacao'] = estrutura_navegacao
+    
+    # Imprime estatísticas para depuração
+    for secao, docs in documentos_por_secao.items():
+        st.text(f"Seção {secao}: {len(docs)} documentos")
     
     # Combina todos os documentos em uma única lista
     todos_documentos = []
