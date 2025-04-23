@@ -9,6 +9,7 @@ import platform
 import streamlit as st
 import requests
 import io
+import traceback
 from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 import time
@@ -78,7 +79,7 @@ Este sistema acessa bibliotecas do SharePoint, extrai texto de documentos visuai
 permite consultas em linguagem natural usando IA.
 """)
 
-# Botão para limpar cache e reiniciar VINIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+# Botão para limpar cache e reiniciar
 if st.button("🧹 Limpar cache e reiniciar"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
@@ -746,7 +747,8 @@ if not token:
     st.error("❌ Não foi possível gerar o token de acesso ao SharePoint.")
     st.info("Verifique se as credenciais estão configuradas corretamente nos secrets do Streamlit.")
     st.stop()
-# AQUIIIII (VINI) AJUSTE ABAIXO PARA EVITAR NOVAS FALHAS:
+
+# Função para obter todos os documentos do SharePoint organizados por seção
 def get_all_site_content(token):
     """Obtém todos os arquivos de todas as bibliotecas do site e organiza por seção"""
     documentos_por_secao = {}
@@ -792,9 +794,10 @@ def get_all_site_content(token):
             caminho_navegacao = caminho.strip("/").split("/")
             arvore = estrutura_navegacao['arvore_navegacao']
             for parte in caminho_navegacao:
-                if parte not in arvore:
+                if parte and parte not in arvore:
                     arvore[parte] = {}
-                arvore = arvore[parte]
+                if parte:
+                    arvore = arvore[parte]
 
     st.session_state['documentos_por_secao'] = documentos_por_secao
     st.session_state['estrutura_navegacao'] = estrutura_navegacao
@@ -805,6 +808,76 @@ def get_all_site_content(token):
 
     return todos_documentos
 
+# Função para baixar múltiplos arquivos
+def baixar_arquivos(token, arquivos, pasta="data", progress_bar=None, extensoes_validas=None):
+    """Baixa múltiplos arquivos e retorna informações sobre eles"""
+    # Define extensões padrão se não fornecidas
+    if extensoes_validas is None:
+        extensoes_validas = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".txt", ".docx"]
+        
+    # Filtra por extensões válidas
+    arquivos_para_baixar = []
+    for arq in arquivos:
+        nome = arq.get("name", "").lower()
+        if any(nome.endswith(ext) for ext in extensoes_validas):
+            arquivos_para_baixar.append(arq)
+    
+    # Verifica se há arquivos para baixar
+    total_arquivos = len(arquivos_para_baixar)
+    if total_arquivos == 0:
+        st.warning("⚠️ Nenhum arquivo com formato suportado encontrado.")
+        return []
+    
+    # Lista para armazenar informações dos arquivos baixados
+    arquivos_baixados = []
+    
+    # Download dos arquivos
+    for i, arq in enumerate(arquivos_para_baixar):
+        nome = arq.get("name", "")
+        download_url = arq.get("@microsoft.graph.downloadUrl")
+        nivel = arq.get("_nivel_hierarquico", 0)
+        caminho = arq.get("_caminho_pasta", "/")
+        categoria = arq.get("_categoria", "")
+        
+        if download_url:
+            # Atualiza progresso
+            if progress_bar:
+                progresso = min((i + 1) / total_arquivos, 0.99)
+                progress_bar.progress(progresso, text=f"Baixando {i+1}/{total_arquivos}: {nome}")
+            
+            # Baixa o arquivo
+            caminho_local, conteudo_binario, caminho_pasta = baixar_arquivo(
+                token, download_url, nome, caminho, pasta
+            )
+            
+            if caminho_local:
+                # Adiciona informações para cada arquivo baixado
+                arquivo_info = {
+                    "nome": nome,
+                    "caminho_local": caminho_local,
+                    "nivel_hierarquico": nivel,
+                    "caminho_pasta": caminho,
+                    "categoria": categoria
+                }
+                
+                # Determina o tipo do arquivo
+                if nome.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                    arquivo_info["tipo"] = "imagem"
+                elif nome.lower().endswith('.pdf'):
+                    arquivo_info["tipo"] = "pdf"
+                elif nome.lower().endswith(('.txt', '.csv')):
+                    arquivo_info["tipo"] = "texto"
+                else:
+                    arquivo_info["tipo"] = "outro"
+                
+                arquivos_baixados.append(arquivo_info)
+    
+    # Finaliza progresso
+    if progress_bar:
+        progress_bar.progress(1.0, text=f"✅ Download concluído! {len(arquivos_baixados)}/{total_arquivos} arquivos baixados.")
+        time.sleep(0.5)
+    
+    return arquivos_baixados
 
 # Interface principal - só exibe se estiver autenticado
 # Obter todos os documentos do SharePoint organizados por seção
@@ -843,45 +916,14 @@ if 'documentos_por_secao' not in st.session_state:
         
         except Exception as e:
             st.error(f"❌ Erro ao obter documentos: {str(e)}")
-            import traceback
             st.code(traceback.format_exc())
-
-def baixar_arquivos(token, arquivos, pasta="data", progress_bar=None):
-    """Baixa múltiplos arquivos e retorna uma lista de caminhos locais"""
-    arquivos_baixados = []
-    total = len(arquivos)
-
-    for idx, arq in enumerate(arquivos):
-        nome_arquivo = arq.get("name", f"arquivo_{idx}")
-        download_url = arq.get("@microsoft.graph.downloadUrl")
-        caminho_pasta = arq.get("_caminho_pasta", "/")
-
-        if download_url:
-            caminho_local, conteudo_binario, caminho = baixar_arquivo(
-                token, download_url, nome_arquivo, caminho_pasta, pasta
-            )
-
-            if caminho_local:
-                arq["_caminho_local"] = caminho_local
-                arq["_conteudo_binario"] = conteudo_binario
-                arq["_caminho_pasta"] = caminho
-                arquivos_baixados.append(arq)
-
-        # Atualiza a barra de progresso, se fornecida
-        if progress_bar:
-            progresso = (idx + 1) / total
-            progress_bar.progress(progresso, text=f"Baixando arquivo {idx + 1} de {total}")
-
-    # Salva os arquivos baixados na sessão
-    st.session_state['arquivos_validos'] = arquivos_baixados
-    return arquivos_baixados
 
 # Interface para selecionar seção, biblioteca e documentos
 if 'documentos_por_secao' in st.session_state:
     # Obter todas as seções disponíveis
     secoes = list(st.session_state['documentos_por_secao'].keys())
     
-    # Interface com abas para as seções principais (Operações, Monitoria, Treinamento, etc.)
+    # Interface com abas para as seções principais
     if secoes:
         # Exibir as seções como tabs para melhor navegação
         tab_secoes = st.tabs(secoes)
@@ -927,113 +969,50 @@ if 'documentos_por_secao' in st.session_state:
                                     pasta="data", 
                                     progress_bar=st.progress(0)
                                 )
-# Processamento dos arquivos encontrados
-if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos']:
-    arquivos_validos = st.session_state['arquivos_validos']
-    
-    with st.expander("💾 Arquivos para Processamento", expanded=True):
-        st.write(f"Biblioteca: **{st.session_state['biblioteca_selecionada']}**")
-        
-        # Opção para filtrar por nível hierárquico
-        if 'arquivos_por_nivel' in st.session_state and len(st.session_state['arquivos_por_nivel']) > 1:
-            niveis_disponiveis = sorted(st.session_state['arquivos_por_nivel'].keys())
-            nivel_selecionado = st.multiselect(
-                "Filtrar por nível hierárquico:",
-                options=niveis_disponiveis,
-                default=niveis_disponiveis,
-                format_func=lambda x: f"Nível {x}"
-            )
-            
-            # Filtra arquivos pelos níveis selecionados
-            if nivel_selecionado:
-                arquivos_filtrados = []
-                for nivel in nivel_selecionado:
-                    arquivos_filtrados.extend(st.session_state['arquivos_por_nivel'][nivel])
-            else:
-                arquivos_filtrados = arquivos_validos
-        else:
-            arquivos_filtrados = arquivos_validos
-        
-        # Exibe a lista de arquivos e permite seleção
-        nomes_arquivos = [arq.get("name", "Sem nome") for arq in arquivos_filtrados]
-        arquivos_selecionados = st.multiselect(
-            "Selecione os arquivos para processamento:",
-            options=nomes_arquivos,
-            default=nomes_arquivos[:min(5, len(nomes_arquivos))]  # Seleciona os 5 primeiros por padrão
-        )
-        
-        if not arquivos_selecionados:
-            st.warning("⚠️ Selecione pelo menos um arquivo para processamento.")
-        else:
-            # Botão para iniciar o processamento
-            if st.button("📥 Processar Arquivos Selecionados"):
-                conteudo_extraido = []
-                
-                with st.spinner(f"Processando {len(arquivos_selecionados)} arquivos..."):
-                    # Cria uma barra de progresso
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    # Processa cada arquivo selecionado
-                    for idx, nome in enumerate(arquivos_selecionados):
-                        # Atualiza status
-                        progresso = idx / len(arquivos_selecionados)
-                        progress_bar.progress(progresso)
-                        status_text.text(f"Processando {nome}... ({idx+1}/{len(arquivos_selecionados)})")
-                        
-                        # Encontra o arquivo na lista de arquivos válidos
-                        arquivo = next(a for a in arquivos_filtrados if a.get("name") == nome)
-                        download_url = arquivo.get("@microsoft.graph.downloadUrl")
-                        nivel_hierarquico = arquivo.get('_nivel_hierarquico', 0)
-                        caminho_pasta = arquivo.get('_caminho_pasta', '/')
-                        
-                        if download_url:
-                            # Baixa o arquivo
-                            caminho_local, conteudo_binario, caminho = baixar_arquivo(
-                                token, download_url, nome, caminho_pasta
-                            )
-                            
-                            if caminho_local:
-                                # Tenta extrair texto do arquivo
-                                texto = extrair_texto_de_arquivo(
-                                    conteudo_binario, nome, nivel_hierarquico, caminho_pasta
-                                )
                                 
-                                if texto:
-                                    # Adiciona à lista de conteúdos extraídos
-                                    conteudo_extraido.append(texto)
-                    
-                    # Finaliza o progresso
-                    progress_bar.progress(1.0)
-                    time.sleep(0.5)
-                    progress_bar.empty()
-                    status_text.empty()
-                
-                # Verifica se algum conteúdo foi extraído
-                if not conteudo_extraido:
-                    st.warning("⚠️ Não foi possível extrair texto de nenhum dos arquivos selecionados.")
-                    st.info("Verifique se os arquivos contêm texto legível para OCR ou se o Tesseract está configurado corretamente.")
-                else:
-                    st.success(f"✅ Texto extraído com sucesso de {len(conteudo_extraido)} arquivo(s)!")
-                    
-                    # Mostra amostra do texto extraído
-# Este código deve estar DENTRO do bloco que processa os arquivos, logo após extrair o texto e antes de finalizar o else
-                    st.success(f"✅ Texto extraído com sucesso de {len(conteudo_extraido)} arquivo(s)!")
-                    
-                    # Mostra amostra do texto extraído
-                    st.subheader("📝 Amostra do Texto Extraído")
-                    for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
-                        st.markdown(f"**Documento {idx+1}:**")
-                        if texto and len(texto) > 0:
-                            preview = texto[:500] + "..." if len(texto) > 500 else texto
-                            st.code(preview, language="text")
-                        else:
-                            st.info("Este documento não contém texto extraível.")
-                    
-                    # Salva na session_state
-                    st.session_state['conteudo_extraido'] = conteudo_extraido
-
-# O código abaixo deve estar NO NÍVEL GLOBAL (sem indentação), fora do bloco de processamento
+                                if arquivos_baixados:
+                                    st.success(f"✅ {len(arquivos_baixados)} documentos baixados com sucesso!")
+                                    
+                                    # Processar os arquivos baixados para extrair texto
+                                    conteudo_extraido = []
+                                    
+                                    # Para cada arquivo baixado, extrair o texto
+                                    for idx, arquivo in enumerate(arquivos_baixados):
+                                        caminho_local = arquivo.get("caminho_local")
+                                        tipo = arquivo.get("tipo")
+                                        nome = arquivo.get("nome")
+                                        nivel_hierarquico = arquivo.get("nivel_hierarquico", 0)
+                                        caminho_pasta = arquivo.get("caminho_pasta", "/")
+                                        
+                                        st.text(f"Processando {idx+1}/{len(arquivos_baixados)}: {nome}")
+                                        
+                                        # Extrair texto do arquivo
+                                        texto = extrair_texto_de_arquivo(
+                                            caminho_local, 
+                                            nome, 
+                                            nivel_hierarquico, 
+                                            caminho_pasta
+                                        )
+                                        
+                                        if texto:
+                                            conteudo_extraido.append(texto)
+                                    
+                                    # Salva na session_state
+                                    st.session_state['conteudo_extraido'] = conteudo_extraido
+                                    
+                                    # Mostra amostra do texto extraído
+                                    st.subheader("📝 Amostra do Texto Extraído")
+                                    for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
+                                        st.markdown(f"**Documento {idx+1}:**")
+                                        if texto and len(texto) > 0:
+                                            preview = texto[:500] + "..." if len(texto) > 500 else texto
+                                            st.code(preview, language="text")
+                                        else:
+                                            st.info("Este documento não contém texto extraível.")
+                                else:
+                                    st.error("❌ Não foi possível baixar os documentos selecionados.")
+    else:
+        st.warning("Nenhuma seção encontrada no SharePoint.")
 
 # Interface para perguntas e respostas
 if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extraido']:
