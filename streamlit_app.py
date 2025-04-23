@@ -82,7 +82,7 @@ permite consultas em linguagem natural usando IA.
 if st.button("🧹 Limpar cache e reiniciar"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
-    st.experimental_rerun()
+    st.rerun()
 
 # Configuração do OCR e caminhos
 with st.sidebar:
