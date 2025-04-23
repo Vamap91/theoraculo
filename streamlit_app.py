@@ -747,81 +747,97 @@ if not token:
     st.info("Verifique se as credenciais estão configuradas corretamente nos secrets do Streamlit.")
     st.stop()
 
-# Carrega bibliotecas do SharePoint
-with st.expander("📚 Bibliotecas do SharePoint", expanded=True):
-    st.info("Carregando bibliotecas do SharePoint...")
-    bibliotecas = listar_bibliotecas(token)
-    
-    if not bibliotecas:
-        st.warning("⚠️ Nenhuma biblioteca encontrada.")
-        st.stop()
-    
-    # Mostra as bibliotecas disponíveis
-    nomes_bibliotecas = [b["name"] for b in bibliotecas]
-    biblioteca_selecionada = st.selectbox("Selecione uma biblioteca:", nomes_bibliotecas)
-    
-    # Encontra o drive_id da biblioteca selecionada
-    drive = next(b for b in bibliotecas if b["name"] == biblioteca_selecionada)
-    drive_id = drive["id"]
-    
-    # Opção para limitar o número de arquivos
-    col1, col2 = st.columns(2)
-    with col1:
-        limitar_arquivos = st.checkbox("Limitar número de arquivos", value=True)
-    with col2:
-        if limitar_arquivos:
-            limite_arquivos = st.number_input("Número máximo de arquivos:", min_value=1, max_value=100, value=10)
-        else:
-            limite_arquivos = None
-    
-    # Botão para buscar arquivos
-    if st.button("🔍 Buscar Arquivos na Biblioteca"):
-        with st.spinner("Buscando todos os arquivos da biblioteca..."):
-            progress_bar = st.progress(0, text="Iniciando busca...")
-            arquivos = listar_todos_os_arquivos(token, drive_id, progress_bar=progress_bar, limite=limite_arquivos)
+# Interface principal - só exibe se estiver autenticado
+# Obter todos os documentos do SharePoint organizados por seção
+if 'documentos_por_secao' not in st.session_state:
+    with st.spinner("Conectando ao SharePoint e obtendo todos os documentos..."):
+        try:
+            # Usar a nova função para obter todos os documentos organizados por seção
+            todos_documentos = get_all_site_content(token)
             
-            if not arquivos:
-                st.warning("⚠️ Nenhum arquivo encontrado nessa biblioteca.")
-                st.stop()
-            
-            # Filtra apenas extensões suportadas
-            extensoes_validas = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".txt"]
-            arquivos_validos = [
-                arq for arq in arquivos 
-                if any(arq.get("name", "").lower().endswith(ext) for ext in extensoes_validas)
-            ]
-            
-            # Mostra quantidade de arquivos encontrados
-            total_arquivos = len(arquivos)
-            total_validos = len(arquivos_validos)
-            
-            if total_validos == 0:
-                st.warning(f"⚠️ Foram encontrados {total_arquivos} arquivos, mas nenhum com formato suportado para OCR.")
-                st.info("Formatos suportados: " + ", ".join(extensoes_validas))
-                st.stop()
-            
-            st.success(f"✅ Encontrados {total_arquivos} arquivos, sendo {total_validos} com formato suportado para OCR.")
-            
-            # Agrupa arquivos por nível hierárquico
-            arquivos_por_nivel = {}
-            for arq in arquivos_validos:
-                nivel = arq.get('_nivel_hierarquico', 0)
-                if nivel not in arquivos_por_nivel:
-                    arquivos_por_nivel[nivel] = []
-                arquivos_por_nivel[nivel].append(arq)
-            
-            # Mostra distribuição de arquivos por nível
-            if len(arquivos_por_nivel) > 1:
-                st.info("Distribuição de arquivos por nível hierárquico:")
-                for nivel, arquivos_nivel in sorted(arquivos_por_nivel.items()):
-                    st.text(f"Nível {nivel}: {len(arquivos_nivel)} arquivo(s)")
-            
-            # Salva na session_state para não perder ao recarregar
-            st.session_state['arquivos_validos'] = arquivos_validos
-            st.session_state['arquivos_por_nivel'] = arquivos_por_nivel
-            st.session_state['biblioteca_selecionada'] = biblioteca_selecionada
-            st.session_state['drive_id'] = drive_id
+            # Verificar se foram encontrados documentos
+            if not todos_documentos:
+                st.warning("⚠️ Nenhum documento encontrado no SharePoint.")
+            else:
+                st.success(f"✅ Foram encontrados {len(todos_documentos)} documentos no SharePoint!")
+                
+                # Adicionar modo de depuração expandido
+                with st.expander("🔍 Detalhes da Estrutura Encontrada", expanded=False):
+                    estrutura = st.session_state.get('estrutura_navegacao', {})
+                    
+                    # Mostrar estatísticas
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Documentos por Seção")
+                        for secao, docs in st.session_state.get('documentos_por_secao', {}).items():
+                            st.info(f"{secao}: {len(docs)} documentos")
+                    
+                    with col2:
+                        st.subheader("Documentos por Categoria")
+                        categorias = estrutura.get('categorias', {})
+                        for categoria, count in categorias.items():
+                            st.info(f"{categoria}: {count} documentos")
+                    
+                    # Mostrar árvore de navegação
+                    st.subheader("Árvore de Navegação")
+                    st.json(estrutura.get('arvore_navegacao', {}))
+        
+        except Exception as e:
+            st.error(f"❌ Erro ao obter documentos: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
 
+# Interface para selecionar seção, biblioteca e documentos
+if 'documentos_por_secao' in st.session_state:
+    # Obter todas as seções disponíveis
+    secoes = list(st.session_state['documentos_por_secao'].keys())
+    
+    # Interface com abas para as seções principais (Operações, Monitoria, Treinamento, etc.)
+    if secoes:
+        # Exibir as seções como tabs para melhor navegação
+        tab_secoes = st.tabs(secoes)
+        
+        # Para cada seção, mostrar as bibliotecas e documentos
+        for i, secao in enumerate(secoes):
+            with tab_secoes[i]:
+                st.header(f"📚 {secao}")
+                
+                # Obter documentos da seção atual
+                documentos_secao = st.session_state['documentos_por_secao'][secao]
+                
+                # Agrupar por categoria ou biblioteca para melhor organização
+                categorias = {}
+                for doc in documentos_secao:
+                    categoria = doc.get('_categoria', 'Geral')
+                    if categoria not in categorias:
+                        categorias[categoria] = []
+                    categorias[categoria].append(doc)
+                
+                # Interface para selecionar documentos por categoria
+                for categoria, docs in categorias.items():
+                    with st.expander(f"{categoria} ({len(docs)} documentos)", expanded=True):
+                        # Lista de documentos com checkbox para seleção
+                        selected_docs = []
+                        for doc in docs:
+                            doc_name = doc.get('name', 'Documento sem nome')
+                            doc_path = doc.get('_caminho_pasta', '/')
+                            
+                            # Cria um identificador único para o documento
+                            doc_id = f"{doc_path}_{doc_name}"
+                            
+                            if st.checkbox(f"{doc_name}", key=doc_id):
+                                selected_docs.append(doc)
+                        
+                        # Botão para processar os documentos selecionados
+                        if selected_docs and st.button(f"🔍 Processar {len(selected_docs)} Documentos de {categoria}", key=f"btn_{secao}_{categoria}"):
+                            with st.spinner(f"Baixando e extraindo texto de {len(selected_docs)} documento(s)..."):
+                                # Baixar os documentos selecionados
+                                arquivos_baixados = baixar_arquivos(
+                                    token, 
+                                    selected_docs, 
+                                    pasta="data", 
+                                    progress_bar=st.progress(0)
+                                )
 # Processamento dos arquivos encontrados
 if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos']:
     arquivos_validos = st.session_state['arquivos_validos']
