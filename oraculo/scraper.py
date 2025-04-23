@@ -182,7 +182,7 @@ def listar_todos_os_arquivos(
         caminho_pasta = caminho_pasta.replace("//", "/")
         if caminho_pasta.startswith("/"):
             caminho_pasta = caminho_pasta[1:]
-url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{caminho_pasta}:/children"
+        url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{caminho_pasta}:/children"
     
     arquivos = []
     try:
@@ -568,6 +568,212 @@ def verificar_token(token: str) -> bool:
         return response.status_code == 200
     except:
         return False
+
+def get_all_site_content(token: str) -> List[Dict[str, Any]]:
+    """
+    Obtém todo o conteúdo do site, incluindo todas as seções e documentos.
+    Adaptado para estrutura hierárquica do Guia Rápido.
+    
+    Args:
+        token: Token de autenticação para a Microsoft Graph API
+        
+    Returns:
+        Lista de dicionários com informações de todos os documentos
+    """
+    # Passo 1: Obtém todas as bibliotecas
+    st.info("Obtendo bibliotecas do SharePoint...")
+    libraries = listar_bibliotecas(token)
+    all_documents = []
+    
+    # Passo 2: Para cada biblioteca, obter estrutura completa
+    progress_bar = st.progress(0.0, text="Analisando estrutura do site...")
+    
+    for idx, library in enumerate(libraries):
+        library_name = library.get("name", "")
+        library_id = library.get("id", "")
+        
+        # Atualiza a barra de progresso
+        progress_value = (idx / len(libraries))
+        progress_bar.progress(progress_value, text=f"Acessando biblioteca: {library_name}")
+        
+        try:
+            # Obter dados básicos da biblioteca
+            library_details = obter_detalhes_biblioteca(token, library_id)
+            
+            # Analisar o nome e caminho para identificar seção
+            library_path = library_details.get("webUrl", "").lower()
+            
+            # Identificar a qual seção pertence
+            section = "Outro"
+            if "operacao" in library_path or "operações" in library_path:
+                section = "Operações"
+            elif "monitoria" in library_path:
+                section = "Monitoria"
+            elif "treinamento" in library_path:
+                section = "Treinamento"
+            
+            # Obter todos os arquivos recursivamente
+            start_progress = progress_value
+            end_progress = (idx + 1) / len(libraries)
+            
+            # Filtra por extensões relevantes
+            extensions = [".pdf", ".png", ".jpg", ".jpeg", ".docx", ".txt"]
+            
+            documents = listar_todos_os_arquivos(
+                token, 
+                library_id, 
+                "/", 
+                progress_bar,
+                start_progress,
+                end_progress,
+                0,
+                None,
+                extensions,
+                True
+            )
+            
+            # Adicionar metadados da seção
+            for doc in documents:
+                doc['_secao'] = section
+                doc['_biblioteca'] = library_name
+                
+                # Verificação adicional para categorização por estrutura de menu
+                if not doc.get('_categoria'):
+                    path = doc.get('_caminho_pasta', '').lower()
+                    if "operacao" in path or "operações" in path:
+                        doc['_categoria'] = "Operações"
+                    elif "monitoria" in path:
+                        doc['_categoria'] = "Monitoria"
+                    elif "treinamento" in path:
+                        doc['_categoria'] = "Treinamento"
+            
+            all_documents.extend(documents)
+            
+        except Exception as e:
+            st.warning(f"Erro ao processar biblioteca {library_name}: {str(e)}")
+    
+    # Passo 3: Buscar também na "Acesso Rápido" e outras áreas especiais
+    try:
+        # Identificar se existe uma biblioteca/drive específica para Acesso Rápido
+        acesso_rapido_libs = [lib for lib in libraries if "acesso" in lib.get("name", "").lower()]
+        
+        for lib in acesso_rapido_libs:
+            lib_id = lib.get("id", "")
+            
+            documents = listar_todos_os_arquivos(
+                token, 
+                lib_id,
+                "/",
+                progress_bar,
+                0.9,
+                1.0,
+                0,
+                None,
+                None,
+                True
+            )
+            
+            for doc in documents:
+                doc['_secao'] = "Acesso Rápido"
+                doc['_biblioteca'] = lib.get("name", "")
+            
+            all_documents.extend(documents)
+    except Exception as e:
+        st.warning(f"Erro ao processar Acesso Rápido: {str(e)}")
+    
+    # Passo 4: Analisar a estrutura para identificar seções principais
+    progress_bar.progress(1.0, text=f"Análise concluída! Encontrados {len(all_documents)} documentos.")
+    
+    # Estrutura hierárquica
+    estrutura = analisar_estrutura_navegacao(all_documents)
+    st.session_state['estrutura_navegacao'] = estrutura
+    
+    # Organizar documentos por seção
+    sections = {}
+    for doc in all_documents:
+        section = doc.get('_secao', 'Outros')
+        if section not in sections:
+            sections[section] = []
+        sections[section].append(doc)
+    
+    st.session_state['documentos_por_secao'] = sections
+    
+    return all_documents
+
+def obter_documentos_por_secao(documents: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Organiza os documentos por seção (Operações, Monitoria, Treinamento, etc.).
+    
+    Args:
+        documents: Lista de documentos obtidos do SharePoint
+        
+    Returns:
+        Dicionário com documentos organizados por seção
+    """
+    result = {}
+    
+    for doc in documents:
+        # Determina a seção do documento
+        secao = doc.get('_secao', 'Outro')
+        categoria = doc.get('_categoria', '')
+        
+# Se não tiver seção definida, tenta inferir a partir da categoria
+        if secao == 'Outro' and categoria:
+            if categoria in ['Operações']:
+                secao = 'Operações'
+            elif categoria in ['Monitoria']:
+                secao = 'Monitoria'
+            elif categoria in ['Treinamento', 'Guia Prático', 'Guia Rápido']:
+                secao = 'Treinamento'
+        
+        # Tenta inferir do caminho
+        if secao == 'Outro':
+            caminho = doc.get('_caminho_pasta', '').lower()
+            if 'operacao' in caminho or 'operações' in caminho:
+                secao = 'Operações'
+            elif 'monitoria' in caminho:
+                secao = 'Monitoria'
+            elif 'treinamento' in caminho:
+                secao = 'Treinamento'
+        
+        # Garante que a seção existe no resultado
+        if secao not in result:
+            result[secao] = []
+        
+        # Adiciona o documento à seção
+        result[secao].append(doc)
+    
+    return result
+
+def obter_documentos_por_biblioteca(documents: List[Dict[str, Any]]) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """
+    Organiza os documentos por seção e biblioteca.
+    
+    Args:
+        documents: Lista de documentos obtidos do SharePoint
+        
+    Returns:
+        Dicionário com documentos organizados por seção e biblioteca
+    """
+    result = {}
+    
+    for doc in documents:
+        # Determina a seção e biblioteca do documento
+        secao = doc.get('_secao', 'Outro')
+        biblioteca = doc.get('_biblioteca', 'Geral')
+        
+        # Garante que a seção existe no resultado
+        if secao not in result:
+            result[secao] = {}
+        
+        # Garante que a biblioteca existe na seção
+        if biblioteca not in result[secao]:
+            result[secao][biblioteca] = []
+        
+        # Adiciona o documento à biblioteca
+        result[secao][biblioteca].append(doc)
+    
+    return result
 
 def analisar_estrutura_navegacao(arquivos: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
