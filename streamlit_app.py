@@ -906,17 +906,18 @@ if 'arquivos_validos' in st.session_state and st.session_state['arquivos_validos
                     st.success(f"✅ Texto extraído com sucesso de {len(conteudo_extraido)} arquivo(s)!")
                     
                     # Mostra amostra do texto extraído
-                    with st.expander("📝 Amostra do Texto Extraído"):
-                        if conteudo_extraido:
-                            for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
-                                st.markdown(f"**Documento {idx+1}:**")
-                                if texto and len(texto) > 0:
-                                    preview = texto[:500] + "..." if len(texto) > 500 else texto
-                                    st.code(preview, language="text")
-                                else:
-                                    st.info("Este documento não contém texto extraível.")
-                        else:
-                            st.info("Nenhum conteúdo extraído para mostrar.")
+# Mostra amostra do texto extraído
+st.subheader("📝 Amostra do Texto Extraído")
+if conteudo_extraido:
+    for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
+        st.markdown(f"**Documento {idx+1}:**")
+        if texto and len(texto) > 0:
+            preview = texto[:500] + "..." if len(texto) > 500 else texto
+            st.code(preview, language="text")
+        else:
+            st.info("Este documento não contém texto extraível.")
+else:
+    st.info("Nenhum conteúdo extraído para mostrar.")
                     
                     # Salva na session_state
                     st.session_state['conteudo_extraido'] = conteudo_extraido
