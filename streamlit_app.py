@@ -78,6 +78,12 @@ Este sistema acessa bibliotecas do SharePoint, extrai texto de documentos visuai
 permite consultas em linguagem natural usando IA.
 """)
 
+# Botão para limpar cache e reiniciar VINIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+if st.button("🧹 Limpar cache e reiniciar"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.experimental_rerun()
+
 # Configuração do OCR e caminhos
 with st.sidebar:
     st.header("⚙️ Configurações")
