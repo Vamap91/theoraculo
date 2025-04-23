@@ -746,6 +746,65 @@ if not token:
     st.error("❌ Não foi possível gerar o token de acesso ao SharePoint.")
     st.info("Verifique se as credenciais estão configuradas corretamente nos secrets do Streamlit.")
     st.stop()
+# AQUIIIII (VINI) AJUSTE ABAIXO PARA EVITAR NOVAS FALHAS:
+def get_all_site_content(token):
+    """Obtém todos os arquivos de todas as bibliotecas do site e organiza por seção"""
+    documentos_por_secao = {}
+    estrutura_navegacao = {
+        'categorias': {}, 
+        'arvore_navegacao': {}
+    }
+
+    # Busca todas as bibliotecas do site
+    bibliotecas = listar_bibliotecas(token)
+
+    for biblioteca in bibliotecas:
+        drive_id = biblioteca.get("id")
+        nome_biblioteca = biblioteca.get("name", "Sem Nome")
+
+        if not drive_id:
+            continue
+
+        # Lista todos os arquivos dessa biblioteca
+        arquivos = listar_todos_os_arquivos(token, drive_id)
+
+        for arq in arquivos:
+            arq['_categoria'] = nome_biblioteca
+
+            # Determina a seção com base no caminho da pasta
+            caminho = arq.get('_caminho_pasta', '/').lower()
+
+            if "operacao" in caminho or "operação" in caminho:
+                secao = "Operações"
+            elif "monitoria" in caminho:
+                secao = "Monitoria"
+            elif "treinamento" in caminho:
+                secao = "Treinamento"
+            else:
+                secao = "Outros"
+
+            if secao not in documentos_por_secao:
+                documentos_por_secao[secao] = []
+
+            documentos_por_secao[secao].append(arq)
+            estrutura_navegacao['categorias'][nome_biblioteca] = estrutura_navegacao['categorias'].get(nome_biblioteca, 0) + 1
+
+            caminho_navegacao = caminho.strip("/").split("/")
+            arvore = estrutura_navegacao['arvore_navegacao']
+            for parte in caminho_navegacao:
+                if parte not in arvore:
+                    arvore[parte] = {}
+                arvore = arvore[parte]
+
+    st.session_state['documentos_por_secao'] = documentos_por_secao
+    st.session_state['estrutura_navegacao'] = estrutura_navegacao
+
+    todos_documentos = []
+    for docs in documentos_por_secao.values():
+        todos_documentos.extend(docs)
+
+    return todos_documentos
+
 
 # Interface principal - só exibe se estiver autenticado
 # Obter todos os documentos do SharePoint organizados por seção
