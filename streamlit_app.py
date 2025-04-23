@@ -846,6 +846,36 @@ if 'documentos_por_secao' not in st.session_state:
             import traceback
             st.code(traceback.format_exc())
 
+def baixar_arquivos(token, arquivos, pasta="data", progress_bar=None):
+    """Baixa múltiplos arquivos e retorna uma lista de caminhos locais"""
+    arquivos_baixados = []
+    total = len(arquivos)
+
+    for idx, arq in enumerate(arquivos):
+        nome_arquivo = arq.get("name", f"arquivo_{idx}")
+        download_url = arq.get("@microsoft.graph.downloadUrl")
+        caminho_pasta = arq.get("_caminho_pasta", "/")
+
+        if download_url:
+            caminho_local, conteudo_binario, caminho = baixar_arquivo(
+                token, download_url, nome_arquivo, caminho_pasta, pasta
+            )
+
+            if caminho_local:
+                arq["_caminho_local"] = caminho_local
+                arq["_conteudo_binario"] = conteudo_binario
+                arq["_caminho_pasta"] = caminho
+                arquivos_baixados.append(arq)
+
+        # Atualiza a barra de progresso, se fornecida
+        if progress_bar:
+            progresso = (idx + 1) / total
+            progress_bar.progress(progresso, text=f"Baixando arquivo {idx + 1} de {total}")
+
+    # Salva os arquivos baixados na sessão
+    st.session_state['arquivos_validos'] = arquivos_baixados
+    return arquivos_baixados
+
 # Interface para selecionar seção, biblioteca e documentos
 if 'documentos_por_secao' in st.session_state:
     # Obter todas as seções disponíveis
