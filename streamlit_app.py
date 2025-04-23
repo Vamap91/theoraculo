@@ -918,9 +918,9 @@ if conteudo_extraido:
             st.info("Este documento não contém texto extraível.")
 else:
     st.info("Nenhum conteúdo extraído para mostrar.")
-                    
-                    # Salva na session_state
-                    st.session_state['conteudo_extraido'] = conteudo_extraido
+    
+# Salva na session_state
+st.session_state['conteudo_extraido'] = conteudo_extraido
 
 # Interface para perguntas e respostas
 if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extraido']:
