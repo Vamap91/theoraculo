@@ -1,8 +1,3 @@
-"""
-ORÁCULO - Análise Inteligente de Documentos do SharePoint
-Aplicação principal adaptada para estrutura hierárquica do Guia Rápido da Carglass.
-"""
-
 import os
 import tempfile
 import platform
@@ -748,14 +743,16 @@ if not token:
     st.info("Verifique se as credenciais estão configuradas corretamente nos secrets do Streamlit.")
     st.stop()
 
-# AQUIIIIIIIIIIIIIIIIIII Função para obter todos os documentos do SharePoint organizados por seção
+# AQUIIIIIIIIIIIIIIIIIII - temos a função para obter todos os documentos do SharePoint organizados por seção
 def get_all_site_content(token):
     """Obtém todos os arquivos de todas as bibliotecas do site e organiza por seção"""
+    # Inicializar dicionários para armazenar os documentos por seção
     documentos_por_secao = {
         "Operações": [],
         "Monitoria": [],
         "Treinamento": [],
         "Acesso Rápido": [],
+        "Documentos": [],
         "Outros": []
     }
     
@@ -767,8 +764,14 @@ def get_all_site_content(token):
     # Busca todas as bibliotecas do site
     bibliotecas = listar_bibliotecas(token)
     
+    # Armazena todas as bibliotecas encontradas para depuração
+    st.session_state['bibliotecas_encontradas'] = bibliotecas
+    
     progresso = st.progress(0.0)
     st.text("Analisando bibliotecas...")
+    
+    # Busca específica para documentos gerais
+    total_docs = 0
     
     # Para cada biblioteca, exploramos seu conteúdo
     for idx, biblioteca in enumerate(bibliotecas):
@@ -783,59 +786,68 @@ def get_all_site_content(token):
         progresso.progress(progress_value)
         st.text(f"Processando biblioteca: {nome_biblioteca} ({idx+1}/{len(bibliotecas)})")
         
-        # Determina a seção com base no nome da biblioteca e URL
-        secao_biblioteca = "Outros"
-        nome_lower = nome_biblioteca.lower()
-        if "documento" in nome_lower or "documentos" in nome_lower:
-            # Esta é a biblioteca principal, contém todas as seções
-            secao_biblioteca = "Documentos"
-        elif "guia" in nome_lower and ("rápido" in nome_lower or "rapido" in nome_lower):
-            secao_biblioteca = "Guia Rápido"
+        # Mostra mais detalhes sobre a biblioteca para depuração
+        st.text(f"URL: {webUrl}")
         
-        # Lista todos os arquivos dessa biblioteca, incluindo subpastas - SEM limite
+        # Lista todos os arquivos dessa biblioteca sem limite
         arquivos = listar_todos_os_arquivos(token, drive_id)
         
         # Log para depuração
         st.text(f"Encontrados {len(arquivos)} arquivos na biblioteca {nome_biblioteca}")
+        total_docs += len(arquivos)
         
+        # Armazena todos os arquivos encontrados nesta biblioteca
+        if "arquivos_por_biblioteca" not in st.session_state:
+            st.session_state["arquivos_por_biblioteca"] = {}
+        st.session_state["arquivos_por_biblioteca"][nome_biblioteca] = arquivos
+        
+        # Por padrão, coloque os documentos na seção "Documentos"
         for arq in arquivos:
             arq['_categoria'] = nome_biblioteca
+            arq['_biblioteca'] = nome_biblioteca
             
-            # Determina a seção com base no caminho da pasta e nome
-            caminho = arq.get('_caminho_pasta', '/').lower()
+            # Tenta categorizar manualmente com base nos nomes das imagens que você mostrou
             nome_arquivo = arq.get('name', '').lower()
+            caminho = arq.get('_caminho_pasta', '/').lower()
             
-            # Por padrão, usa a seção da biblioteca
-            secao = secao_biblioteca
+            secao = "Documentos"
             
-            # Tenta determinar a seção específica
-            if "operac" in caminho or "operações" in caminho or "operacoes" in caminho:
-                secao = "Operações"
-            elif "monitor" in caminho:
-                secao = "Monitoria"
-            elif "trein" in caminho:
+            # Regras específicas com base nas imagens que você compartilhou
+            if "guia prático negociação vflr" in nome_arquivo:
                 secao = "Treinamento"
-            elif ("acesso" in caminho and "rapido" in caminho) or "acesso rápido" in caminho:
+            elif "guia de negociação rrsm" in nome_arquivo:
+                secao = "Treinamento"
+            elif "alteração de procedimento" in nome_arquivo:
+                secao = "Monitoria"
+            elif "alteracao de procedimento" in nome_arquivo:
+                secao = "Monitoria"
+            elif "reforço de procedimento" in nome_arquivo:
+                secao = "Operações"
+            elif "reforco de procedimento" in nome_arquivo:
+                secao = "Operações"
+            elif "comunicado 02/04" in nome_arquivo or "comunicado 02_04" in nome_arquivo:
+                secao = "Operações"
+            elif "comunicado 23/04" in nome_arquivo or "comunicado 23_04" in nome_arquivo:
+                secao = "Monitoria"
+            elif "guia de companhias e assistências" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "guia de companhias e assistencias" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "linha de frente" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "recontato" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "frotas" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "back office" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "informações gerais" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "informacoes gerais" in nome_arquivo:
+                secao = "Acesso Rápido"
+            elif "agendamento" in nome_arquivo:
                 secao = "Acesso Rápido"
             
-            # Verifica pelos nomes específicos que você mostrou nas imagens
-            if "linha de frente" in caminho or "linha de frente" in nome_arquivo:
-                secao = "Operações"
-            elif "recontato" in caminho or "recontato" in nome_arquivo:
-                secao = "Monitoria"
-            elif "manuais de procedimento" in caminho:
-                secao = "Treinamento"
-            
-            # Verifica comunicados
-            if "comunicado" in nome_arquivo:
-                if "22/04" in nome_arquivo or "22_04" in nome_arquivo:
-                    secao = "Operações"  # Comunicado de Linha de Frente
-                elif "23/04" in nome_arquivo or "23_04" in nome_arquivo:
-                    secao = "Monitoria"  # Comunicado de Recontato
-            
-            # Adiciona o arquivo à seção apropriada
-            if secao not in documentos_por_secao:
-                documentos_por_secao[secao] = []
             documentos_por_secao[secao].append(arq)
             
             # Atualiza estatísticas
@@ -851,15 +863,15 @@ def get_all_site_content(token):
                     arvore = arvore[parte]
     
     progresso.progress(1.0)
-    st.text("Busca concluída!")
-    
-    # Armazena os resultados na session_state
-    st.session_state['documentos_por_secao'] = documentos_por_secao
-    st.session_state['estrutura_navegacao'] = estrutura_navegacao
+    st.text(f"Busca concluída! Total de documentos encontrados: {total_docs}")
     
     # Imprime estatísticas para depuração
     for secao, docs in documentos_por_secao.items():
         st.text(f"Seção {secao}: {len(docs)} documentos")
+    
+    # Armazena os resultados na session_state
+    st.session_state['documentos_por_secao'] = documentos_por_secao
+    st.session_state['estrutura_navegacao'] = estrutura_navegacao
     
     # Combina todos os documentos em uma única lista
     todos_documentos = []
