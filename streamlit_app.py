@@ -5,11 +5,27 @@ import streamlit as st
 import requests
 import io
 import traceback
+import json
+import time
 from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
-import time
-from openai import OpenAI
 import numpy as np
+from typing import List, Dict, Optional, Tuple, Any, Union
+
+# Importações para Selenium
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException
+    from webdriver_manager.chrome import ChromeDriverManager
+    selenium_disponivel = True
+except ImportError:
+    selenium_disponivel = False
+    st.warning("Selenium não está instalado. A navegação avançada não estará disponível.")
 
 # Configuração para o Poppler (necessário para PDFs) - SOLUÇÃO DO ERRO
 if platform.system() == "Windows":
@@ -62,9 +78,10 @@ st.set_page_config(
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 SITE_ID = "carglassbr.sharepoint.com,7d0ecc3f-b6c8-411d-8ae4-6d5679a38ca8,e53fc2d9-95b5-4675-813d-769b7a737286"
 DATA_DIR = "data"
+SHAREPOINT_URL = "https://carglassbr.sharepoint.com/sites/GuiaRapido"
 
 # Verifica e cria o diretório para armazenar os arquivos, se não existir
-if not os.path.exists(DATA_DIR):
+if not os.path.exists(DATA_DIR) :
     os.makedirs(DATA_DIR)
 
 # Título e descrição
@@ -114,6 +131,18 @@ with st.sidebar:
         index=0
     )
     
+    # Configuração do método de acesso ao SharePoint
+    st.subheader("Método de Acesso ao SharePoint")
+    metodo_acesso = st.radio(
+        "Método de acesso:",
+        options=["API Graph (Padrão)", "Navegação Avançada (Selenium)"],
+        index=0,
+        help="Escolha como acessar os documentos do SharePoint"
+    )
+    
+    if metodo_acesso == "Navegação Avançada (Selenium)" and not selenium_disponivel:
+        st.error("❌ Selenium não está instalado. Instale com: pip install selenium webdriver-manager")
+    
     st.divider()
     
     # Verifica o status do sistema
@@ -137,6 +166,12 @@ with st.sidebar:
             st.error(f"⚠️ Poppler não está configurado corretamente")
     else:
         st.error("❌ Nenhum processador de PDF disponível")
+    
+    # Verifica Selenium
+    if selenium_disponivel:
+        st.success("✅ Selenium está disponível para navegação avançada")
+    else:
+        st.warning("⚠️ Selenium não está instalado (navegação avançada indisponível)")
     
     # Informações do projeto
     st.markdown("### 📋 Sobre o Projeto")
@@ -166,7 +201,7 @@ def get_graph_token():
             "grant_type": "client_credentials"
         }
 
-        response = requests.post(url, headers=headers, data=data, timeout=30)
+        response = requests.post(url, headers=headers, data=data, timeout=30) 
         if response.status_code == 200:
             return response.json().get("access_token")
         else:
@@ -199,6 +234,96 @@ def listar_bibliotecas(token):
             return []
     except Exception as e:
         st.error(f"Erro ao listar bibliotecas: {str(e)}")
+        return []
+
+def listar_pastas(token, drive_id, folder_path="/"):
+    """
+    Lista apenas as pastas em um caminho específico.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Determine a URL correta com base no caminho da pasta
+    if folder_path == "/":
+        url = f"{GRAPH_ROOT}/drives/{drive_id}/root/children"
+    else:
+        # Certifique-se de que o caminho da pasta não comece com '/'
+        if folder_path.startswith("/"):
+            folder_path = folder_path[1:]
+        url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{folder_path}:/children"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            # Filtra apenas itens que são pastas
+            items = response.json().get("value", [])
+            folders = []
+            
+            for item in items:
+                if item.get("folder"):
+                    # Adiciona informação de nível hierárquico à pasta
+                    nivel = folder_path.count('/') + 1
+                    item['_nivel_hierarquico'] = nivel
+                    item['_caminho_pasta'] = folder_path
+                    folders.append(item)
+            
+            return folders
+        else:
+            st.warning(f"Erro ao listar pastas em {folder_path}: {response.status_code}")
+            return []
+    except Exception as e:
+        st.warning(f"Erro ao listar pastas em {folder_path}: {str(e)}")
+        return []
+
+def listar_arquivos(token, drive_id, folder_path="/", extensoes_validas=None):
+    """
+    Lista apenas os arquivos (não pastas) em um caminho específico.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Define extensões válidas padrão se não fornecidas
+    if extensoes_validas is None:
+        extensoes_validas = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".txt"]
+    
+    # Determine a URL correta com base no caminho da pasta
+    if folder_path == "/":
+        url = f"{GRAPH_ROOT}/drives/{drive_id}/root/children"
+    else:
+        # Certifique-se de que o caminho da pasta não comece com '/'
+        if folder_path.startswith("/"):
+            folder_path = folder_path[1:]
+        url = f"{GRAPH_ROOT}/drives/{drive_id}/root:/{folder_path}:/children"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            # Filtra apenas itens que NÃO são pastas e têm extensões válidas
+            items = response.json().get("value", [])
+            files = []
+            
+            for item in items:
+                if not item.get("folder"):
+                    # Adiciona informação de nível hierárquico ao arquivo
+                    nivel = folder_path.count('/') + 1
+                    item['_nivel_hierarquico'] = nivel
+                    item['_caminho_pasta'] = folder_path
+                    
+                    # Filtra por extensão, se especificado
+                    nome = item.get("name", "").lower()
+                    if any(nome.endswith(ext.lower()) for ext in extensoes_validas):
+                        # Tenta identificar categoria com base no caminho/nome
+                        if "guia_rapido" in folder_path.lower() or "guia rápido" in folder_path.lower():
+                            item['_categoria'] = "Guia Rápido"
+                        elif "comunicado" in nome.lower():
+                            item['_categoria'] = "Comunicado"
+                        
+                        files.append(item)
+            
+            return files
+        else:
+            st.warning(f"Erro ao listar arquivos em {folder_path}: {response.status_code}")
+            return []
+    except Exception as e:
+        st.warning(f"Erro ao listar arquivos em {folder_path}: {str(e)}")
         return []
 
 def listar_todos_os_arquivos(token, drive_id, caminho_pasta="/", progress_bar=None, limite=None):
@@ -417,831 +542,808 @@ def extrair_texto_de_pdf_com_pymupdf(pdf_data_or_path, nivel_hierarquico=0, cami
         return texto_combinado
     except Exception as e:
         st.error(f"Erro ao processar PDF com PyMuPDF: {str(e)}")
-        return f"[erro ao processar PDF: {str(e)}]"
+        return f"[erro ao processar PDF com PyMuPDF: {str(e)}]"
 
-def extrair_texto_de_pdf_com_pdf2image(pdf_data_or_path, nivel_hierarquico=0, caminho_pasta="/"):
-    """Extrai texto de um PDF usando pdf2image e OCR"""
+# NOVA FUNÇÃO: Mapear estrutura completa do SharePoint
+def mapear_estrutura_sharepoint(token: str, site_id: str = SITE_ID, detalhado: bool = True) -> Dict[str, Any]:
+    """
+    Mapeia a estrutura completa do SharePoint para identificar os caminhos corretos.
+    
+    Args:
+        token: Token de autenticação para a Microsoft Graph API
+        site_id: ID do site SharePoint
+        detalhado: Se True, inclui informações detalhadas sobre cada item
+        
+    Returns:
+        Dicionário com a estrutura completa do SharePoint
+    """
+    st.info("Iniciando mapeamento da estrutura do SharePoint...")
+    
+    # Estrutura para armazenar o mapeamento completo
+    estrutura_completa = {
+        "bibliotecas": {},
+        "listas": {},
+        "paginas": {},
+        "navegacao": {},
+        "metadata": {
+            "site_id": site_id,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_bibliotecas": 0,
+            "total_pastas": 0,
+            "total_arquivos": 0
+        }
+    }
+    
+    # 1. Lista todas as bibliotecas
     try:
-        # Se for um caminho para arquivo
-        if isinstance(pdf_data_or_path, str):
-            if not os.path.exists(pdf_data_or_path):
-                return ""
-            nome_arquivo = os.path.basename(pdf_data_or_path)
-            with open(pdf_data_or_path, 'rb') as f:
-                pdf_data = f.read()
-        # Se for conteúdo binário
-        elif isinstance(pdf_data_or_path, bytes):
-            pdf_data = pdf_data_or_path
-            nome_arquivo = "arquivo_binario.pdf"
-        else:
-            return ""
+        bibliotecas = listar_bibliotecas(token)
+        estrutura_completa["metadata"]["total_bibliotecas"] = len(bibliotecas)
         
-        # Cria um arquivo temporário para o PDF
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_data)
-            temp_pdf_path = temp_pdf.name
-        
-        try:
-            # Converte PDF para imagens
-            imagens = pdf2image.convert_from_path(temp_pdf_path, dpi=300)
-        except Exception as e:
-            os.unlink(temp_pdf_path)
-            # Se falhar com Poppler, tenta processar diretamente como imagem
-            if "Unable to get page count" in str(e):
-                st.info("Tentando processar o PDF como imagem devido a problemas com o Poppler.")
-                try:
-                    return extrair_texto_de_imagem(pdf_data, nivel_hierarquico, caminho_pasta)
-                except:
-                    pass
-            return f"[erro ao processar PDF: {str(e)}]"
-        
-        # Remove o arquivo temporário
-        os.unlink(temp_pdf_path)
-        
-        # Extrai texto de cada página
-        textos = []
-        for i, img in enumerate(imagens):
-            texto_pagina = extrair_texto_de_imagem(img)
-            if texto_pagina and texto_pagina != "[imagem sem texto legível]":
-                textos.append(f"--- Página {i+1} ---\n{texto_pagina}")
-        
-        # Combina o texto de todas as páginas
-        texto_combinado = "\n\n".join(textos) if textos else "[PDF sem texto legível]"
-        
-        # Adiciona informações de contexto hierárquico
-        if nivel_hierarquico > 0 or caminho_pasta != "/":
-            prefixo = f"[Nível {nivel_hierarquico}]"
-            if caminho_pasta != "/":
-                prefixo += f" [Caminho: {caminho_pasta}]"
-                
-            # Identifica tipos de documento baseados no nome
-            if "guia" in nome_arquivo.lower():
-                prefixo += " [Tipo: Guia]"
-            elif "comunicado" in nome_arquivo.lower():
-                prefixo += " [Tipo: Comunicado]"
-                
-            texto_combinado = f"{prefixo}\n{texto_combinado}"
+        for biblioteca in bibliotecas:
+            biblioteca_id = biblioteca.get("id")
+            biblioteca_nome = biblioteca.get("name")
+            biblioteca_url = biblioteca.get("webUrl", "")
             
-        return texto_combinado
-    except Exception as e:
-        st.error(f"Erro ao processar PDF com pdf2image: {str(e)}")
-        return f"[erro ao processar PDF: {str(e)}]"
-
-def detectar_tipo_arquivo(conteudo_binario):
-    """Detecta o tipo MIME de um arquivo usando python-magic, se disponível"""
-    if has_magic and isinstance(conteudo_binario, bytes):
+            st.info(f"Mapeando biblioteca: {biblioteca_nome}")
+            
+            # Estrutura para esta biblioteca
+            estrutura_biblioteca = {
+                "id": biblioteca_id,
+                "nome": biblioteca_nome,
+                "url": biblioteca_url,
+                "pastas_raiz": [],
+                "arquivos_raiz": [],
+                "total_pastas": 0,
+                "total_arquivos": 0
+            }
+            
+            # 2. Lista pastas e arquivos na raiz da biblioteca
+            try:
+                # Lista pastas na raiz
+                pastas_raiz = listar_pastas(token, biblioteca_id)
+                estrutura_biblioteca["total_pastas"] += len(pastas_raiz)
+                estrutura_completa["metadata"]["total_pastas"] += len(pastas_raiz)
+                
+                # Lista arquivos na raiz
+                arquivos_raiz = listar_arquivos(token, biblioteca_id)
+                estrutura_biblioteca["total_arquivos"] += len(arquivos_raiz)
+                estrutura_completa["metadata"]["total_arquivos"] += len(arquivos_raiz)
+                
+                # Adiciona informações básicas sobre pastas
+                for pasta in pastas_raiz:
+                    pasta_info = {
+                        "nome": pasta.get("name"),
+                        "id": pasta.get("id"),
+                        "caminho": "/",
+                        "url": pasta.get("webUrl", "")
+                    }
+                    
+                    # Se detalhado, explora recursivamente a estrutura de subpastas
+                    if detalhado:
+                        pasta_info["conteudo"] = _mapear_pasta_recursivamente(
+                            token, 
+                            biblioteca_id, 
+                            f"/{pasta.get('name')}", 
+                            estrutura_completa["metadata"]
+                        )
+                    
+                    estrutura_biblioteca["pastas_raiz"].append(pasta_info)
+                
+                # Adiciona informações básicas sobre arquivos
+                for arquivo in arquivos_raiz:
+                    arquivo_info = {
+                        "nome": arquivo.get("name"),
+                        "id": arquivo.get("id"),
+                        "tipo": arquivo.get("file", {}).get("mimeType", ""),
+                        "tamanho": arquivo.get("size", 0),
+                        "url": arquivo.get("webUrl", ""),
+                        "download_url": arquivo.get("@microsoft.graph.downloadUrl", "")
+                    }
+                    estrutura_biblioteca["arquivos_raiz"].append(arquivo_info)
+                
+                # Adiciona esta biblioteca à estrutura completa
+                estrutura_completa["bibliotecas"][biblioteca_nome] = estrutura_biblioteca
+                
+            except Exception as e:
+                st.warning(f"Erro ao mapear conteúdo da biblioteca {biblioteca_nome}: {str(e)}")
+                estrutura_biblioteca["erro"] = str(e)
+                estrutura_completa["bibliotecas"][biblioteca_nome] = estrutura_biblioteca
+        
+        # 3. Tenta obter informações de navegação do site
         try:
-            return magic.from_buffer(conteudo_binario, mime=True)
-        except:
-            pass
-    return None
-
-def extrair_texto_de_arquivo(caminho_ou_conteudo, nome_arquivo=None, nivel_hierarquico=0, caminho_pasta="/"):
-    """Extrai texto de um arquivo com detecção inteligente de formato"""
-    # Determina a extensão e o nome do arquivo
-    if isinstance(caminho_ou_conteudo, str) and os.path.exists(caminho_ou_conteudo):
-        nome = os.path.basename(caminho_ou_conteudo).lower()
-    else:
-        nome = nome_arquivo.lower() if nome_arquivo else ""
-    
-    # Detecta o tipo real do arquivo, se possível
-    mime_type = None
-    if isinstance(caminho_ou_conteudo, bytes):
-        mime_type = detectar_tipo_arquivo(caminho_ou_conteudo)
-    
-    # Define a estratégia com base no tipo MIME ou extensão
-    if mime_type:
-        if 'image' in mime_type:
-            return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-        elif 'pdf' in mime_type:
-            if pdf_processor == "pymupdf":
-                return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            # Obtém informações de navegação
+            nav_url = f"{GRAPH_ROOT}/sites/{site_id}/navigation"
+            response = requests.get(nav_url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                estrutura_completa["navegacao"] = response.json()
             else:
-                return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-        elif 'text' in mime_type:
-            # Extrai texto de arquivos de texto
-            try:
-                if isinstance(caminho_ou_conteudo, bytes):
-                    texto = caminho_ou_conteudo.decode('utf-8', errors='ignore')
-                else:
-                    with open(caminho_ou_conteudo, 'r', encoding='utf-8', errors='ignore') as f:
-                        texto = f.read()
-                
-                # Adiciona informações de contexto hierárquico
-                if nivel_hierarquico > 0 or caminho_pasta != "/":
-                    prefixo = f"[Nível {nivel_hierarquico}]"
-                    if caminho_pasta != "/":
-                        prefixo += f" [Caminho: {caminho_pasta}]"
-                    texto = f"{prefixo}\n{texto}"
-                
-                return texto
-            except Exception as e:
-                return f"[erro ao ler arquivo de texto: {str(e)}]"
-    else:
-        # Determina o tipo baseado na extensão do arquivo
-        if nome.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-            return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-        elif nome.endswith('.pdf'):
-            # Tenta primeiro com o processador de PDF configurado
-            try:
-                if pdf_processor == "pymupdf":
-                    return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-                else:
-                    return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-            except Exception as e:
-                # Se falhar, tenta processar como imagem
-                st.warning(f"Erro ao processar PDF, tentando como imagem: {str(e)}")
-                return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-        elif nome.endswith(('.txt', '.csv', '.md')):
-            # Extrai texto de arquivos de texto
-            try:
-                if isinstance(caminho_ou_conteudo, str) and os.path.exists(caminho_ou_conteudo):
-                    with open(caminho_ou_conteudo, 'r', encoding='utf-8', errors='ignore') as f:
-                        texto = f.read()
-                elif isinstance(caminho_ou_conteudo, bytes):
-                    texto = caminho_ou_conteudo.decode('utf-8', errors='ignore')
-                else:
-                    return "[formato de arquivo não suportado]"
-                
-                # Adiciona informações de contexto hierárquico
-                if nivel_hierarquico > 0 or caminho_pasta != "/":
-                    prefixo = f"[Nível {nivel_hierarquico}]"
-                    if caminho_pasta != "/":
-                        prefixo += f" [Caminho: {caminho_pasta}]"
-                    texto = f"{prefixo}\n{texto}"
-                
-                return texto
-            except Exception as e:
-                return f"[erro ao ler arquivo de texto: {str(e)}]"
-        else:
-            # Para extensões desconhecidas, tenta primeiro como imagem
-            try:
-                return extrair_texto_de_imagem(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-            except:
-                # Se falhar, tenta como PDF
-                try:
-                    if pdf_processor == "pymupdf":
-                        return extrair_texto_de_pdf_com_pymupdf(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-                    else:
-                        return extrair_texto_de_pdf_com_pdf2image(caminho_ou_conteudo, nivel_hierarquico, caminho_pasta)
-                except:
-                    pass
-    
-    # Se todas as tentativas falharem
-    return f"[não foi possível extrair texto do formato: {nome}]"
-
-def extrair_info_contexto(texto):
-    """Extrai informações de contexto do texto processado"""
-    nivel = 0
-    caminho = "/"
-    tipo = "Desconhecido"
-    menu = ""
-    
-    # Extrai informações das tags de contexto
-    if "[Nível " in texto:
-        try:
-            nivel_str = texto.split("[Nível ")[1].split("]")[0]
-            nivel = int(nivel_str)
-        except:
-            pass
-    
-    if "[Caminho: " in texto:
-        try:
-            caminho = texto.split("[Caminho: ")[1].split("]")[0]
-        except:
-            pass
-    
-    if "[Tipo: " in texto:
-        try:
-            tipo = texto.split("[Tipo: ")[1].split("]")[0]
-        except:
-            pass
-    
-    if "[Menu: " in texto:
-        try:
-            menu = texto.split("[Menu: ")[1].split("]")[0]
-        except:
-            pass
-    
-    return {
-        "nivel": nivel,
-        "caminho": caminho,
-        "tipo": tipo,
-        "menu": menu
-    }
-
-def processar_pergunta(pergunta, conteudo_extraido, modelo_ia="gpt-3.5-turbo"):
-    """Processa uma pergunta considerando a estrutura hierárquica dos dados"""
-    try:
-        # Organiza o conteúdo por níveis hierárquicos
-        conteudo_por_nivel = {}
-        info_contextual = []
-        
-        for i, texto in enumerate(conteudo_extraido):
-            # Extrai informações de contexto
-            info = extrair_info_contexto(texto)
-            info["indice"] = i
-            info["texto"] = texto
-            info_contextual.append(info)
+                estrutura_completa["navegacao"]["erro"] = f"Erro {response.status_code}"
             
-            # Agrupa por nível hierárquico
-            nivel = info["nivel"]
-            if nivel not in conteudo_por_nivel:
-                conteudo_por_nivel[nivel] = []
-            conteudo_por_nivel[nivel].append(texto)
-        
-        # Ordena os níveis hierárquicos
-        niveis_ordenados = sorted(conteudo_por_nivel.keys())
-        
-        # Monta o contexto hierárquico ordenado
-        contexto_ordenado = []
-        for nivel in niveis_ordenados:
-            contexto_ordenado.extend(conteudo_por_nivel[nivel])
-        
-        # Se não tiver estrutura hierárquica, usa o conteúdo original
-        if not contexto_ordenado:
-            contexto_ordenado = conteudo_extraido
-        
-        # Junta o conteúdo com separadores claros
-        contexto = "\n\n---DOCUMENTO HIERÁRQUICO---\n\n".join(contexto_ordenado)
-        
-        # Prepara informações adicionais de contexto para melhorar a resposta da IA
-        info_adicional = "Informações sobre a estrutura hierárquica dos documentos:\n"
-        for nivel in niveis_ordenados:
-            num_docs = len(conteudo_por_nivel[nivel])
-            info_adicional += f"- Nível {nivel}: {num_docs} documento(s)\n"
-        
-        # Agrupa também por tipo de documento
-        tipos = {}
-        for info in info_contextual:
-            tipo = info["tipo"]
-            if tipo not in tipos:
-                tipos[tipo] = 0
-            tipos[tipo] += 1
-        
-        for tipo, contagem in tipos.items():
-            if tipo != "Desconhecido":
-                info_adicional += f"- Tipo '{tipo}': {contagem} documento(s)\n"
-        
-        # Identifica possíveis menus e botões
-        menus = {}
-        for info in info_contextual:
-            menu = info["menu"]
-            if menu and menu not in menus:
-                menus[menu] = 0
-            if menu:
-                menus[menu] += 1
-        
-        for menu, contagem in menus.items():
-            info_adicional += f"- Menu '{menu}': {contagem} documento(s)\n"
-        
-        # Monta o prompt para a IA
-        prompt = f"""
-Você é um assistente inteligente especializado em analisar o conteúdo do SharePoint da Carglass.
-
-INFORMAÇÕES SOBRE A ESTRUTURA HIERÁRQUICA:
-Os documentos a seguir têm uma estrutura hierárquica com múltiplos níveis:
-- Nível 1: Menu principal com botões e opções como "Guia Rápido"
-- Nível 2: Subcategorias com botões como "Seguradoras", "Assistências", etc.
-- Nível 3: Conteúdo detalhado com procedimentos, contatos e informações específicas
-
-{info_adicional}
-
-CONTEXTO DOS DOCUMENTOS:
-{contexto}
-
-INSTRUÇÕES:
-1. Baseie sua resposta EXCLUSIVAMENTE nas informações contidas nos documentos fornecidos.
-2. Considere a estrutura hierárquica ao responder, indicando de qual seção/nível a informação veio.
-3. Se a informação não estiver presente nos documentos, responda claramente: "Não encontrei essa informação nos documentos fornecidos."
-4. Se os documentos contiverem informações parciais, informe quais partes você encontrou e quais estão faltando.
-5. Forneça a resposta de forma clara, concisa e estruturada.
-6. Quando aplicável, mencione o caminho de navegação para encontrar as informações no sistema original.
-
-PERGUNTA DO USUÁRIO: {pergunta}
-"""
-
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        resposta = client.chat.completions.create(
-            model=modelo_ia,
-            messages=[
-                {"role": "system", "content": "Você é um assistente especializado no sistema de Guia Rápido da Carglass que responde com base nos documentos fornecidos."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3  # Menor temperatura para respostas mais precisas
-        )
-        
-        return resposta.choices[0].message.content.strip()
-    except Exception as e:
-        st.error(f"Erro ao processar pergunta com IA: {str(e)}")
-        return f"Ocorreu um erro ao processar sua pergunta: {str(e)}"
-
-# Início da aplicação principal
-token = get_graph_token()
-if not token:
-    st.error("❌ Não foi possível gerar o token de acesso ao SharePoint.")
-    st.info("Verifique se as credenciais estão configuradas corretamente nos secrets do Streamlit.")
-    st.stop()
-
-# AQUIIIIIIIIIIIIIIIIIII - temos a função para obter todos os documentos do SharePoint organizados por seção
-def get_all_site_content(token):
-    """Obtém todos os arquivos de todas as bibliotecas do site e organiza por seção"""
-    # Inicializar dicionários para armazenar os documentos por seção
-    documentos_por_secao = {
-        "Operações": [],
-        "Monitoria": [],
-        "Treinamento": [],
-        "Acesso Rápido": [],
-        "Documentos": [],
-        "Outros": []
-    }
-    
-    estrutura_navegacao = {
-        'categorias': {}, 
-        'arvore_navegacao': {}
-    }
-
-    # Busca todas as bibliotecas do site
-    bibliotecas = listar_bibliotecas(token)
-    
-    # Armazena todas as bibliotecas encontradas para depuração
-    st.session_state['bibliotecas_encontradas'] = bibliotecas
-    
-    progresso = st.progress(0.0)
-    st.text("Analisando bibliotecas...")
-    
-    # Busca específica para documentos gerais
-    total_docs = 0
-    
-    # Para cada biblioteca, exploramos seu conteúdo
-    for idx, biblioteca in enumerate(bibliotecas):
-        drive_id = biblioteca.get("id")
-        nome_biblioteca = biblioteca.get("name", "Sem Nome")
-        webUrl = biblioteca.get("webUrl", "")
-        
-        if not drive_id:
-            continue
+            # Obtém páginas do site
+            pages_url = f"{GRAPH_ROOT}/sites/{site_id}/pages"
+            response = requests.get(pages_url, headers=headers, timeout=30)
             
-        progress_value = (idx / len(bibliotecas))
-        progresso.progress(progress_value)
-        st.text(f"Processando biblioteca: {nome_biblioteca} ({idx+1}/{len(bibliotecas)})")
-        
-        # Mostra mais detalhes sobre a biblioteca para depuração
-        st.text(f"URL: {webUrl}")
-        
-        # Lista todos os arquivos dessa biblioteca sem limite
-        arquivos = listar_todos_os_arquivos(token, drive_id)
-        
-        # Log para depuração
-        st.text(f"Encontrados {len(arquivos)} arquivos na biblioteca {nome_biblioteca}")
-        total_docs += len(arquivos)
-        
-        # Armazena todos os arquivos encontrados nesta biblioteca
-        if "arquivos_por_biblioteca" not in st.session_state:
-            st.session_state["arquivos_por_biblioteca"] = {}
-        st.session_state["arquivos_por_biblioteca"][nome_biblioteca] = arquivos
-        
-        # Por padrão, coloque os documentos na seção "Documentos"
-        for arq in arquivos:
-            arq['_categoria'] = nome_biblioteca
-            arq['_biblioteca'] = nome_biblioteca
-            
-            # Tenta categorizar manualmente com base nos nomes das imagens que você mostrou
-            nome_arquivo = arq.get('name', '').lower()
-            caminho = arq.get('_caminho_pasta', '/').lower()
-            
-            secao = "Documentos"
-            
-            # Regras específicas com base nas imagens que você compartilhou
-            if "guia prático negociação vflr" in nome_arquivo:
-                secao = "Treinamento"
-            elif "guia de negociação rrsm" in nome_arquivo:
-                secao = "Treinamento"
-            elif "alteração de procedimento" in nome_arquivo:
-                secao = "Monitoria"
-            elif "alteracao de procedimento" in nome_arquivo:
-                secao = "Monitoria"
-            elif "reforço de procedimento" in nome_arquivo:
-                secao = "Operações"
-            elif "reforco de procedimento" in nome_arquivo:
-                secao = "Operações"
-            elif "comunicado 02/04" in nome_arquivo or "comunicado 02_04" in nome_arquivo:
-                secao = "Operações"
-            elif "comunicado 23/04" in nome_arquivo or "comunicado 23_04" in nome_arquivo:
-                secao = "Monitoria"
-            elif "guia de companhias e assistências" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "guia de companhias e assistencias" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "linha de frente" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "recontato" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "frotas" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "back office" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "informações gerais" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "informacoes gerais" in nome_arquivo:
-                secao = "Acesso Rápido"
-            elif "agendamento" in nome_arquivo:
-                secao = "Acesso Rápido"
-            
-            documentos_por_secao[secao].append(arq)
-            
-            # Atualiza estatísticas
-            estrutura_navegacao['categorias'][nome_biblioteca] = estrutura_navegacao['categorias'].get(nome_biblioteca, 0) + 1
-            
-            # Constrói árvore de navegação
-            caminho_navegacao = caminho.strip("/").split("/")
-            arvore = estrutura_navegacao['arvore_navegacao']
-            for parte in caminho_navegacao:
-                if parte and parte not in arvore:
-                    arvore[parte] = {}
-                if parte:
-                    arvore = arvore[parte]
-    
-    progresso.progress(1.0)
-    st.text(f"Busca concluída! Total de documentos encontrados: {total_docs}")
-    
-    # Imprime estatísticas para depuração
-    for secao, docs in documentos_por_secao.items():
-        st.text(f"Seção {secao}: {len(docs)} documentos")
-    
-    # Armazena os resultados na session_state
-    st.session_state['documentos_por_secao'] = documentos_por_secao
-    st.session_state['estrutura_navegacao'] = estrutura_navegacao
-    
-    # Combina todos os documentos em uma única lista
-    todos_documentos = []
-    for docs in documentos_por_secao.values():
-        todos_documentos.extend(docs)
-    
-    return todos_documentos
-#AQUIIIIIIIIIIIIIIIIIIII
-# Função para baixar múltiplos arquivos
-def baixar_arquivos(token, arquivos, pasta="data", progress_bar=None, extensoes_validas=None):
-    """Baixa múltiplos arquivos e retorna informações sobre eles"""
-    # Define extensões padrão se não fornecidas
-    if extensoes_validas is None:
-        extensoes_validas = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".txt", ".docx"]
-        
-    # Filtra por extensões válidas
-    arquivos_para_baixar = []
-    for arq in arquivos:
-        nome = arq.get("name", "").lower()
-        if any(nome.endswith(ext) for ext in extensoes_validas):
-            arquivos_para_baixar.append(arq)
-    
-    # Verifica se há arquivos para baixar
-    total_arquivos = len(arquivos_para_baixar)
-    if total_arquivos == 0:
-        st.warning("⚠️ Nenhum arquivo com formato suportado encontrado.")
-        return []
-    
-    # Lista para armazenar informações dos arquivos baixados
-    arquivos_baixados = []
-    
-    # Download dos arquivos
-    for i, arq in enumerate(arquivos_para_baixar):
-        nome = arq.get("name", "")
-        download_url = arq.get("@microsoft.graph.downloadUrl")
-        nivel = arq.get("_nivel_hierarquico", 0)
-        caminho = arq.get("_caminho_pasta", "/")
-        categoria = arq.get("_categoria", "")
-        
-        if download_url:
-            # Atualiza progresso
-            if progress_bar:
-                progresso = min((i + 1) / total_arquivos, 0.99)
-                progress_bar.progress(progresso, text=f"Baixando {i+1}/{total_arquivos}: {nome}")
-            
-            # Baixa o arquivo
-            caminho_local, conteudo_binario, caminho_pasta = baixar_arquivo(
-                token, download_url, nome, caminho, pasta
-            )
-            
-            if caminho_local:
-                # Adiciona informações para cada arquivo baixado
-                arquivo_info = {
-                    "nome": nome,
-                    "caminho_local": caminho_local,
-                    "nivel_hierarquico": nivel,
-                    "caminho_pasta": caminho,
-                    "categoria": categoria
+            if response.status_code == 200:
+                paginas = response.json().get("value", [])
+                estrutura_completa["paginas"] = {
+                    "total": len(paginas),
+                    "items": []
                 }
                 
-                # Determina o tipo do arquivo
-                if nome.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-                    arquivo_info["tipo"] = "imagem"
-                elif nome.lower().endswith('.pdf'):
-                    arquivo_info["tipo"] = "pdf"
-                elif nome.lower().endswith(('.txt', '.csv')):
-                    arquivo_info["tipo"] = "texto"
-                else:
-                    arquivo_info["tipo"] = "outro"
-                
-                arquivos_baixados.append(arquivo_info)
-    
-    # Finaliza progresso
-    if progress_bar:
-        progress_bar.progress(1.0, text=f"✅ Download concluído! {len(arquivos_baixados)}/{total_arquivos} arquivos baixados.")
-        time.sleep(0.5)
-    
-    return arquivos_baixados
-
-# Interface principal - só exibe se estiver autenticado
-# Obter todos os documentos do SharePoint organizados por seção
-if 'documentos_por_secao' not in st.session_state:
-    with st.spinner("Conectando ao SharePoint e obtendo todos os documentos..."):
-        try:
-            # Usar a nova função para obter todos os documentos organizados por seção
-            todos_documentos = get_all_site_content(token)
-            
-            # Verificar se foram encontrados documentos
-            if not todos_documentos:
-                st.warning("⚠️ Nenhum documento encontrado no SharePoint.")
+                for pagina in paginas:
+                    estrutura_completa["paginas"]["items"].append({
+                        "nome": pagina.get("name", ""),
+                        "titulo": pagina.get("title", ""),
+                        "url": pagina.get("webUrl", "")
+                    })
             else:
-                st.success(f"✅ Foram encontrados {len(todos_documentos)} documentos no SharePoint!")
+                estrutura_completa["paginas"]["erro"] = f"Erro {response.status_code}"
                 
-                # Adicionar modo de depuração expandido
-                with st.expander("🔍 Detalhes da Estrutura Encontrada", expanded=False):
-                    estrutura = st.session_state.get('estrutura_navegacao', {})
-                    
-                    # Mostrar estatísticas
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("Documentos por Seção")
-                        for secao, docs in st.session_state.get('documentos_por_secao', {}).items():
-                            st.info(f"{secao}: {len(docs)} documentos")
-                    
-                    with col2:
-                        st.subheader("Documentos por Categoria")
-                        categorias = estrutura.get('categorias', {})
-                        for categoria, count in categorias.items():
-                            st.info(f"{categoria}: {count} documentos")
-                    
-                    # Mostrar árvore de navegação
-                    st.subheader("Árvore de Navegação")
-                    st.json(estrutura.get('arvore_navegacao', {}))
-        
+            # Obtém listas do site
+            lists_url = f"{GRAPH_ROOT}/sites/{site_id}/lists"
+            response = requests.get(lists_url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                listas = response.json().get("value", [])
+                estrutura_completa["listas"] = {
+                    "total": len(listas),
+                    "items": []
+                }
+                
+                for lista in listas:
+                    estrutura_completa["listas"]["items"].append({
+                        "nome": lista.get("name", ""),
+                        "displayName": lista.get("displayName", ""),
+                        "url": lista.get("webUrl", "")
+                    })
+            else:
+                estrutura_completa["listas"]["erro"] = f"Erro {response.status_code}"
+                
         except Exception as e:
-            st.error(f"❌ Erro ao obter documentos: {str(e)}")
-            st.code(traceback.format_exc())
-
-# Interface para selecionar seção, biblioteca e documentos
-if 'documentos_por_secao' in st.session_state:
-    # Obter todas as seções disponíveis
-    secoes = list(st.session_state['documentos_por_secao'].keys())
+            st.warning(f"Erro ao obter informações de navegação: {str(e)}")
+            estrutura_completa["navegacao"]["erro"] = str(e)
     
-    # Interface com abas para as seções principais
-    if secoes:
-        # Exibir as seções como tabs para melhor navegação
-        tab_secoes = st.tabs(secoes)
+    except Exception as e:
+        st.error(f"Erro ao mapear estrutura do SharePoint: {str(e)}")
+        estrutura_completa["erro"] = str(e)
+    
+    st.success(f"Mapeamento concluído! Encontradas {estrutura_completa['metadata']['total_bibliotecas']} bibliotecas, {estrutura_completa['metadata']['total_pastas']} pastas e {estrutura_completa['metadata']['total_arquivos']} arquivos.")
+    
+    return estrutura_completa
+
+def _mapear_pasta_recursivamente(token: str, drive_id: str, caminho_pasta: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Função auxiliar para mapear recursivamente o conteúdo de uma pasta.
+    
+    Args:
+        token: Token de autenticação
+        drive_id: ID da biblioteca
+        caminho_pasta: Caminho da pasta
+        metadata: Dicionário de metadados para atualizar contadores
         
-        # Para cada seção, mostrar as bibliotecas e documentos
-        for i, secao in enumerate(secoes):
-            with tab_secoes[i]:
-                st.header(f"📚 {secao}")
-                
-                # Obter documentos da seção atual
-                documentos_secao = st.session_state['documentos_por_secao'][secao]
-                
-                # Agrupar por categoria ou biblioteca para melhor organização
-                categorias = {}
-                for doc in documentos_secao:
-                    categoria = doc.get('_categoria', 'Geral')
-                    if categoria not in categorias:
-                        categorias[categoria] = []
-                    categorias[categoria].append(doc)
-                
-                # Interface para selecionar documentos por categoria
-                for categoria, docs in categorias.items():
-                    with st.expander(f"{categoria} ({len(docs)} documentos)", expanded=True):
-                        # Lista de documentos com checkbox para seleção
-                        selected_docs = []
-                        for doc in docs:
-                            doc_name = doc.get('name', 'Documento sem nome')
-                            doc_path = doc.get('_caminho_pasta', '/')
-                            
-                            # Cria um identificador único para o documento
-                            doc_id = f"{doc_path}_{doc_name}"
-                            
-                            if st.checkbox(f"{doc_name}", key=doc_id):
-                                selected_docs.append(doc)
-                        
-                        # Botão para processar os documentos selecionados
-                        if selected_docs and st.button(f"🔍 Processar {len(selected_docs)} Documentos de {categoria}", key=f"btn_{secao}_{categoria}"):
-                            with st.spinner(f"Baixando e extraindo texto de {len(selected_docs)} documento(s)..."):
-                                # Baixar os documentos selecionados
-                                arquivos_baixados = baixar_arquivos(
-                                    token, 
-                                    selected_docs, 
-                                    pasta="data", 
-                                    progress_bar=st.progress(0)
-                                )
-                                
-                                if arquivos_baixados:
-                                    st.success(f"✅ {len(arquivos_baixados)} documentos baixados com sucesso!")
-                                    
-                                    # Processar os arquivos baixados para extrair texto
-                                    conteudo_extraido = []
-                                    
-                                    # Para cada arquivo baixado, extrair o texto
-                                    for idx, arquivo in enumerate(arquivos_baixados):
-                                        caminho_local = arquivo.get("caminho_local")
-                                        tipo = arquivo.get("tipo")
-                                        nome = arquivo.get("nome")
-                                        nivel_hierarquico = arquivo.get("nivel_hierarquico", 0)
-                                        caminho_pasta = arquivo.get("caminho_pasta", "/")
-                                        
-                                        st.text(f"Processando {idx+1}/{len(arquivos_baixados)}: {nome}")
-                                        
-                                        # Extrair texto do arquivo
-                                        texto = extrair_texto_de_arquivo(
-                                            caminho_local, 
-                                            nome, 
-                                            nivel_hierarquico, 
-                                            caminho_pasta
-                                        )
-                                        
-                                        if texto:
-                                            conteudo_extraido.append(texto)
-                                    
-                                    # Salva na session_state
-                                    st.session_state['conteudo_extraido'] = conteudo_extraido
-                                    
-                                    # Mostra amostra do texto extraído
-                                    st.subheader("📝 Amostra do Texto Extraído")
-                                    for idx, texto in enumerate(conteudo_extraido[:3]):  # Mostra apenas os 3 primeiros
-                                        st.markdown(f"**Documento {idx+1}:**")
-                                        if texto and len(texto) > 0:
-                                            preview = texto[:500] + "..." if len(texto) > 500 else texto
-                                            st.code(preview, language="text")
-                                        else:
-                                            st.info("Este documento não contém texto extraível.")
-                                else:
-                                    st.error("❌ Não foi possível baixar os documentos selecionados.")
-    else:
-        st.warning("Nenhuma seção encontrada no SharePoint.")
-
-# Interface para perguntas e respostas
-if 'conteudo_extraido' in st.session_state and st.session_state['conteudo_extraido']:
-    st.header("🤖 Consulte o Oráculo")
-    st.markdown("""
-    Faça perguntas sobre os documentos e o Oráculo responderá com base no conteúdo extraído.
+    Returns:
+        Dicionário com a estrutura da pasta
+    """
+    resultado = {
+        "pastas": [],
+        "arquivos": [],
+        "total_pastas": 0,
+        "total_arquivos": 0
+    }
     
-    **Exemplos de perguntas:**
-    - Quais são os procedimentos para atendimento?
-    - Como fazer a busca do cliente?
-    - Qual o telefone de contato?
-    - Quais assistências estão disponíveis?
+    # Lista pastas neste caminho
+    pastas = listar_pastas(token, drive_id, caminho_pasta)
+    resultado["total_pastas"] = len(pastas)
+    metadata["total_pastas"] += len(pastas)
+    
+    # Lista arquivos neste caminho
+    arquivos = listar_arquivos(token, drive_id, caminho_pasta)
+    resultado["total_arquivos"] = len(arquivos)
+    metadata["total_arquivos"] += len(arquivos)
+    
+    # Processa pastas
+    for pasta in pastas:
+        pasta_nome = pasta.get("name")
+        novo_caminho = f"{caminho_pasta}/{pasta_nome}".replace("//", "/")
+        
+        pasta_info = {
+            "nome": pasta_nome,
+            "id": pasta.get("id"),
+            "caminho": caminho_pasta,
+            "url": pasta.get("webUrl", "")
+        }
+        
+        # Mapeia recursivamente o conteúdo desta pasta
+        pasta_info["conteudo"] = _mapear_pasta_recursivamente(
+            token, drive_id, novo_caminho, metadata
+        )
+        
+        resultado["pastas"].append(pasta_info)
+    
+    # Processa arquivos
+    for arquivo in arquivos:
+        arquivo_info = {
+            "nome": arquivo.get("name"),
+            "id": arquivo.get("id"),
+            "tipo": arquivo.get("file", {}).get("mimeType", ""),
+            "tamanho": arquivo.get("size", 0),
+            "url": arquivo.get("webUrl", ""),
+            "download_url": arquivo.get("@microsoft.graph.downloadUrl", "")
+        }
+        resultado["arquivos"].append(arquivo_info)
+    
+    return resultado
+
+def _exibir_pasta_recursivamente(pasta, nivel):
+    """
+    Função auxiliar para exibir recursivamente a estrutura de pastas no Streamlit.
+    
+    Args:
+        pasta: Dicionário com informações da pasta
+        nivel: Nível de indentação
+    """
+    indentacao = "  " * nivel
+    st.write(f"{indentacao}- 📁 {pasta['nome']}")
+    
+    if "conteudo" in pasta:
+        conteudo = pasta["conteudo"]
+        
+        # Exibe arquivos
+        for arquivo in conteudo.get("arquivos", []):
+            st.write(f"{indentacao}  - 📄 {arquivo['nome']}")
+        
+        # Exibe subpastas recursivamente
+        for subpasta in conteudo.get("pastas", []):
+            _exibir_pasta_recursivamente(subpasta, nivel + 1)
+
+# NOVA FUNÇÃO: Explorar estrutura do SharePoint via interface Streamlit
+def explorar_estrutura_sharepoint():
+    """
+    Função para explorar e visualizar a estrutura completa do SharePoint.
+    """
+    st.header("🔍 Explorador de Estrutura do SharePoint")
+    
+    st.markdown("""
+    Esta ferramenta mapeia a estrutura completa do SharePoint, incluindo bibliotecas, 
+    pastas, arquivos, listas e elementos de navegação. Isso ajuda a identificar 
+    problemas de acesso e entender a organização real dos documentos.
     """)
     
-    # Campo para a pergunta
-    pergunta = st.text_area("Digite sua pergunta:", height=100)
+    # Obtém token de autenticação
+    token = get_graph_token()
+    if not token:
+        st.error("❌ Não foi possível obter token de autenticação. Verifique as credenciais.")
+        return
     
-    # Botão para processar a pergunta
-    if pergunta and st.button("🔮 Consultar o Oráculo"):
-        with st.spinner("O Oráculo está analisando sua pergunta..."):
-            resposta = processar_pergunta(
-                pergunta, 
-                st.session_state['conteudo_extraido'],
-                modelo_ia=ai_model
-            )
-            
-            # Exibe a resposta em um componente especial
-            st.markdown("### 💬 Resposta do Oráculo:")
-            st.markdown(
-                f"""<div style="background-color: #f0f8ff; padding: 20px; 
-                border-radius: 10px; border-left: 5px solid #4682b4;">
-                {resposta}
-                </div>""", 
-                unsafe_allow_html=True
-            )
-            
-            # Adiciona ao histórico
-            if 'historico' not in st.session_state:
-                st.session_state['historico'] = []
-            
-            # Adiciona ao histórico (limitado aos últimos 5)
-            st.session_state['historico'].insert(
-                0, {"pergunta": pergunta, "resposta": resposta}
-            )
-            if len(st.session_state['historico']) > 5:
-                st.session_state['historico'] = st.session_state['historico'][:5]
-
-# Mostra histórico de perguntas, se existir
-if 'historico' in st.session_state and st.session_state['historico']:
-    with st.expander("📜 Histórico de Consultas", expanded=False):
-        for idx, item in enumerate(st.session_state['historico']):
-            st.markdown(f"**Pergunta {idx+1}:** {item['pergunta']}")
-            st.markdown(
-                f"""<div style="background-color: #f5f5f5; padding: 10px; 
-                border-radius: 5px; margin-bottom: 15px; font-size: 0.9em;">
-                {item['resposta']}
-                </div>""", 
-                unsafe_allow_html=True
-            )
-
-# Verificações diagnósticas
-with st.expander("🔧 Diagnósticos", expanded=False):
-    st.subheader("Verificação do Sistema")
+    # Opções de mapeamento
+    col1, col2 = st.columns(2)
+    with col1:
+        mapeamento_detalhado = st.checkbox("Mapeamento detalhado", value=True, 
+                                          help="Inclui informações detalhadas sobre cada item")
+    with col2:
+        salvar_resultado = st.checkbox("Salvar resultado em arquivo", value=True,
+                                      help="Salva o resultado do mapeamento em um arquivo JSON")
     
-    # Tesseract OCR
+    # Botão para iniciar o mapeamento
+    if st.button("🔄 Iniciar Mapeamento Completo"):
+        with st.spinner("Mapeando estrutura do SharePoint..."):
+            # Executa o mapeamento
+            estrutura = mapear_estrutura_sharepoint(token, SITE_ID, mapeamento_detalhado)
+            
+            # Exibe resumo
+            st.success(f"✅ Mapeamento concluído!")
+            
+            # Cria abas para diferentes visualizações
+            tab1, tab2, tab3, tab4 = st.tabs(["Resumo", "Bibliotecas", "Navegação", "JSON Completo"])
+            
+            with tab1:
+                st.subheader("Resumo do Mapeamento")
+                
+                # Métricas principais
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Bibliotecas", estrutura["metadata"]["total_bibliotecas"])
+                with col2:
+                    st.metric("Pastas", estrutura["metadata"]["total_pastas"])
+                with col3:
+                    st.metric("Arquivos", estrutura["metadata"]["total_arquivos"])
+                
+                # Informações sobre listas e páginas
+                if "listas" in estrutura and "total" in estrutura["listas"]:
+                    st.metric("Listas", estrutura["listas"]["total"])
+                if "paginas" in estrutura and "total" in estrutura["paginas"]:
+                    st.metric("Páginas", estrutura["paginas"]["total"])
+            
+            with tab2:
+                st.subheader("Estrutura de Bibliotecas")
+                
+                # Lista as bibliotecas encontradas
+                for nome_biblioteca, dados in estrutura["bibliotecas"].items():
+                    with st.expander(f"📁 {nome_biblioteca} ({dados['total_arquivos']} arquivos, {dados['total_pastas']} pastas)"):
+                        st.write(f"**URL:** {dados['url']}")
+                        st.write(f"**ID:** {dados['id']}")
+                        
+                        # Mostra arquivos na raiz
+                        if dados["arquivos_raiz"]:
+                            st.write("**Arquivos na raiz:**")
+                            for arquivo in dados["arquivos_raiz"]:
+                                st.write(f"- 📄 {arquivo['nome']} ({arquivo['tipo']})")
+                        
+                        # Mostra pastas na raiz
+                        if dados["pastas_raiz"]:
+                            st.write("**Pastas na raiz:**")
+                            for pasta in dados["pastas_raiz"]:
+                                _exibir_pasta_recursivamente(pasta, 1)
+            
+            with tab3:
+                st.subheader("Elementos de Navegação")
+                
+                # Exibe informações de navegação
+                if "navegacao" in estrutura and not "erro" in estrutura["navegacao"]:
+                    if "quickLaunch" in estrutura["navegacao"]:
+                        st.write("**Menu de Navegação Rápida:**")
+                        for item in estrutura["navegacao"]["quickLaunch"].get("value", []):
+                            st.write(f"- 🔗 {item.get('displayName')}: {item.get('url')}")
+                    
+                    if "topNavigationBar" in estrutura["navegacao"]:
+                        st.write("**Barra de Navegação Superior:**")
+                        for item in estrutura["navegacao"]["topNavigationBar"].get("value", []):
+                            st.write(f"- 🔗 {item.get('displayName')}: {item.get('url')}")
+                else:
+                    st.warning("Não foi possível obter informações de navegação.")
+            
+            with tab4:
+                st.subheader("Dados JSON Completos")
+                st.json(estrutura)
+            
+            # Salva o resultado em arquivo
+            if salvar_resultado:
+                # Cria pasta para resultados se não existir
+                resultado_dir = "resultados_mapeamento"
+                if not os.path.exists(resultado_dir):
+                    os.makedirs(resultado_dir)
+                
+                # Nome do arquivo com timestamp
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                arquivo_json = os.path.join(resultado_dir, f"mapeamento_sharepoint_{timestamp}.json")
+                
+                # Salva o arquivo
+                with open(arquivo_json, "w", encoding="utf-8") as f:
+                    json.dump(estrutura, f, ensure_ascii=False, indent=2)
+                
+                st.success(f"✅ Resultado salvo em: {arquivo_json}")
+                
+                # Oferece download do arquivo
+                with open(arquivo_json, "r", encoding="utf-8") as f:
+                    st.download_button(
+                        label="📥 Baixar Resultado do Mapeamento",
+                        data=f,
+                        file_name=f"mapeamento_sharepoint_{timestamp}.json",
+                        mime="application/json"
+                    )
+
+# NOVA FUNÇÃO: Acessar documentos via Selenium
+def inicializar_selenium():
+    """
+    Inicializa o navegador Selenium para navegação avançada.
+    
+    Returns:
+        Instância do navegador Selenium ou None em caso de erro
+    """
+    if not selenium_disponivel:
+        st.error("❌ Selenium não está instalado. Instale com: pip install selenium webdriver-manager")
+        return None
+    
     try:
-        versao = pytesseract.get_tesseract_version()
-        st.success(f"✅ Tesseract OCR versão {versao} instalado e configurado.")
+        # Configura as opções do Chrome
+        options = Options()
+        options.add_argument("--headless")  # Executa em modo headless (sem interface gráfica)
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
         
-        try:
-            idiomas = pytesseract.get_languages()
-            st.info(f"Idiomas disponíveis: {', '.join(idiomas)}")
-        except:
-            st.warning("Não foi possível listar os idiomas disponíveis do Tesseract.")
+        # Inicializa o driver
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        return driver
     except Exception as e:
-        st.error(f"❌ Tesseract OCR não encontrado ou não configurado: {str(e)}")
-        st.info("""
-        Para instalar o Tesseract OCR:
-        
-        **Windows:**
-        1. Baixe o instalador em https://github.com/UB-Mannheim/tesseract/wiki
-        2. Instale e adicione ao PATH
-        
-        **macOS:**
-        ```bash
-        brew install tesseract
-        ```
-        
-        **Linux:**
-        ```bash
-        sudo apt update
-        sudo apt install tesseract-ocr
-        sudo apt install tesseract-ocr-por  # Para português
-        ```
-        """)
-    
-    # Processador de PDF
-    st.subheader("Processamento de PDF")
-    if pdf_processor == "pymupdf":
-        st.success("✅ Usando PyMuPDF para processamento de PDFs (recomendado).")
-    elif pdf_processor == "pdf2image":
-        try:
-            pdf2image.pdfinfo_from_bytes(b"%PDF-1.0\n1 0 obj<</Pages 2 0 R>>/endobj/trailer<</Root 1 0 R>>")
-            st.success("✅ Poppler está instalado e configurado corretamente.")
-        except Exception as e:
-            st.error(f"❌ Poppler não está configurado corretamente: {str(e)}")
-            st.info("""
-            Para instalar o Poppler:
-            
-            **Windows:**
-            1. Baixe em https://github.com/oschwartz10612/poppler-windows/releases/
-            2. Extraia e adicione a pasta bin ao PATH
-            
-            **macOS:**
-            ```bash
-            brew install poppler
-            ```
-            
-            **Linux:**
-            ```bash
-            sudo apt install poppler-utils
-            ```
-            
-            **Streamlit Cloud:**
-            Crie um arquivo packages.txt na raiz do projeto com o conteúdo:
-            ```
-            poppler-utils
-            ```
-            """)
-    else:
-        st.error("❌ Nenhum processador de PDF disponível.")
-    
-    # Python-magic (opcional)
-    st.subheader("Detecção de Tipo de Arquivo")
-    if has_magic:
-        st.success("✅ Python-magic está instalado para melhor detecção de tipo de arquivo.")
-    else:
-        st.warning("⚠️ Python-magic não está instalado. A detecção de tipo de arquivo será limitada à extensão.")
-        st.info("""
-        Para instalar python-magic:
-        
-        ```bash
-        pip install python-magic
-        ```
-        
-        No Windows também é necessário:
-        ```bash
-        pip install python-magic-bin
-        ```
-        """)
+        st.error(f"❌ Erro ao inicializar Selenium: {str(e)}")
+        return None
 
-# Rodapé
-st.markdown("---")
-st.markdown(
-    """<div style="text-align: center; color: #666;">
-    <p>🔮 Oráculo - Análise Inteligente de Documentos do SharePoint</p>
-    <p style="font-size: 0.8em;">Desenvolvido para análise hierárquica do Guia Rápido da Carglass.</p>
-    </div>""",
-    unsafe_allow_html=True
-)
+def autenticar_sharepoint_selenium(driver, token):
+    """
+    Autentica no SharePoint usando o token obtido.
+    
+    Args:
+        driver: Instância do navegador Selenium
+        token: Token de autenticação
+        
+    Returns:
+        True se autenticado com sucesso, False caso contrário
+    """
+    try:
+        # Armazena o token em um cookie ou localStorage
+        # Nota: Esta é uma simplificação, a autenticação real pode ser mais complexa
+        driver.get(SHAREPOINT_URL)
+        
+        # Injeta o token via JavaScript
+        script = f"""
+        localStorage.setItem('graphToken', '{token}');
+        """
+        driver.execute_script(script)
+        
+        # Verifica se a página carregou corretamente
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        return True
+    except Exception as e:
+        st.error(f"❌ Erro ao autenticar no SharePoint: {str(e)}")
+        return False
+
+def navegar_para_secao(driver, secao):
+    """
+    Navega para uma seção específica do Guia Rápido.
+    
+    Args:
+        driver: Instância do navegador Selenium
+        secao: Nome da seção (Operações, Monitoria, Treinamento)
+        
+    Returns:
+        True se navegou com sucesso, False caso contrário
+    """
+    try:
+        # Espera a página carregar completamente
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        # Tenta encontrar o elemento da seção pelo texto
+        xpath_secao = f"//span[contains(text(), '{secao}')]"
+        
+        # Espera o elemento ficar visível e clicável
+        elemento_secao = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath_secao))
+        )
+        
+        # Rola até o elemento para garantir que está visível
+        driver.execute_script("arguments[0].scrollIntoView(true);", elemento_secao)
+        
+        # Clica no elemento
+        elemento_secao.click()
+        
+        # Espera a seção carregar
+        time.sleep(2)
+        
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao navegar para a seção {secao}: {str(e)}")
+        return False
+
+def extrair_documentos_da_secao(driver, secao):
+    """
+    Extrai informações sobre documentos de uma seção específica.
+    
+    Args:
+        driver: Instância do navegador Selenium
+        secao: Nome da seção atual
+        
+    Returns:
+        Lista de dicionários com informações dos documentos
+    """
+    documentos = []
+    
+    try:
+        # Espera os documentos carregarem
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        # Captura uma screenshot para debug
+        screenshot_path = f"secao_{secao.lower().replace(' ', '_')}.png"
+        driver.save_screenshot(screenshot_path)
+        
+        # Tenta diferentes seletores para encontrar os documentos
+        seletores = [
+            "div.ms-DocumentCard",  # Cartões de documento padrão do SharePoint
+            "div.ms-List-cell",     # Células de lista
+            "div.ms-DetailsRow",    # Linhas de detalhes
+            "a[href*='.pdf']",      # Links para PDFs
+            "a[href*='.jpg'], a[href*='.png'], a[href*='.jpeg']"  # Links para imagens
+        ]
+        
+        for seletor in seletores:
+            try:
+                # Tenta encontrar elementos com este seletor
+                elementos = driver.find_elements(By.CSS_SELECTOR, seletor)
+                
+                if elementos:
+                    st.info(f"Encontrados {len(elementos)} elementos com o seletor '{seletor}' na seção {secao}")
+                    
+                    for elemento in elementos:
+                        try:
+                            # Tenta extrair informações do documento
+                            doc_info = {"secao": secao}
+                            
+                            # Tenta encontrar o título
+                            try:
+                                titulo_elem = elemento.find_element(By.CSS_SELECTOR, "span.ms-DocumentCard-title, span.ms-Link")
+                                doc_info["nome"] = titulo_elem.text.strip()
+                            except:
+                                # Se não encontrar um título específico, usa o texto do elemento
+                                doc_info["nome"] = elemento.text.strip() or "Documento sem título"
+                            
+                            # Tenta encontrar o link
+                            try:
+                                link_elem = elemento.find_element(By.TAG_NAME, "a")
+                                doc_info["url"] = link_elem.get_attribute("href")
+                            except:
+                                # Se o próprio elemento for um link
+                                if elemento.tag_name == "a":
+                                    doc_info["url"] = elemento.get_attribute("href")
+                                else:
+                                    doc_info["url"] = ""
+                            
+                            # Adiciona à lista se tiver informações mínimas
+                            if doc_info.get("nome") and doc_info.get("url"):
+                                documentos.append(doc_info)
+                        except Exception as e:
+                            st.warning(f"Erro ao processar elemento: {str(e)}")
+                            continue
+                    
+                    # Se encontrou documentos com este seletor, interrompe a busca
+                    if documentos:
+                        break
+            except Exception as e:
+                continue
+        
+        # Se não encontrou documentos com os seletores específicos, tenta uma abordagem mais genérica
+        if not documentos:
+            st.warning(f"Não foi possível encontrar documentos com seletores específicos na seção {secao}. Tentando abordagem genérica...")
+            
+            # Captura todos os links da página
+            links = driver.find_elements(By.TAG_NAME, "a")
+            
+            for link in links:
+                try:
+                    href = link.get_attribute("href")
+                    texto = link.text.strip()
+                    
+                    # Filtra apenas links que parecem ser documentos
+                    if href and texto and (
+                        ".pdf" in href.lower() or 
+                        ".jpg" in href.lower() or 
+                        ".png" in href.lower() or 
+                        ".jpeg" in href.lower() or
+                        "documentos" in href.lower()
+                    ):
+                        documentos.append({
+                            "nome": texto or "Link para documento",
+                            "url": href,
+                            "secao": secao,
+                            "tipo": "link_generico"
+                        })
+                except:
+                    continue
+    
+    except Exception as e:
+        st.error(f"❌ Erro ao extrair documentos da seção {secao}: {str(e)}")
+    
+    return documentos
+
+def acessar_documentos_via_selenium():
+    """
+    Acessa documentos do SharePoint usando navegação avançada com Selenium.
+    """
+    st.header("🌐 Navegação Avançada do SharePoint")
+    
+    st.markdown("""
+    Esta ferramenta usa automação de navegador para acessar documentos que não estão 
+    disponíveis diretamente via API. Navega pelas diferentes seções do Guia Rápido 
+    (Operações, Monitoria, Treinamento) e extrai informações sobre os documentos.
+    """)
+    
+    # Verifica se o Selenium está disponível
+    if not selenium_disponivel:
+        st.error("❌ Selenium não está instalado. Instale com: pip install selenium webdriver-manager")
+        return
+    
+    # Obtém token de autenticação
+    token = get_graph_token()
+    if not token:
+        st.error("❌ Não foi possível obter token de autenticação. Verifique as credenciais.")
+        return
+    
+    # Opções de navegação
+    secoes = ["Operações", "Monitoria", "Treinamento"]
+    secoes_selecionadas = st.multiselect(
+        "Selecione as seções para navegar:",
+        options=secoes,
+        default=secoes,
+        help="Escolha quais seções do Guia Rápido deseja explorar"
+    )
+    
+    # Botão para iniciar a navegação
+    if st.button("🚀 Iniciar Navegação Avançada"):
+        if not secoes_selecionadas:
+            st.warning("⚠️ Selecione pelo menos uma seção para navegar.")
+            return
+        
+        with st.spinner("Inicializando navegador..."):
+            # Inicializa o Selenium
+            driver = inicializar_selenium()
+            
+            if not driver:
+                st.error("❌ Não foi possível inicializar o navegador Selenium.")
+                return
+            
+            try:
+                # Navega para o SharePoint
+                st.info(f"Navegando para {SHAREPOINT_URL}...")
+                driver.get(SHAREPOINT_URL)
+                
+                # Espera a página carregar
+                WebDriverWait(driver, 30).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Captura screenshot inicial
+                driver.save_screenshot("pagina_inicial.png")
+                st.image("pagina_inicial.png", caption="Página inicial do SharePoint", width=600)
+                
+                # Dicionário para armazenar os documentos encontrados
+                todos_documentos = {}
+                total_documentos = 0
+                
+                # Navega por cada seção selecionada
+                for secao in secoes_selecionadas:
+                    st.subheader(f"Navegando para seção: {secao}")
+                    
+                    # Tenta navegar para a seção
+                    if navegar_para_secao(driver, secao):
+                        # Captura screenshot da seção
+                        screenshot_path = f"secao_{secao.lower().replace(' ', '_')}.png"
+                        driver.save_screenshot(screenshot_path)
+                        st.image(screenshot_path, caption=f"Seção: {secao}", width=600)
+                        
+                        # Extrai documentos da seção
+                        documentos = extrair_documentos_da_secao(driver, secao)
+                        
+                        # Armazena os documentos encontrados
+                        todos_documentos[secao] = documentos
+                        total_documentos += len(documentos)
+                        
+                        st.success(f"✅ Encontrados {len(documentos)} documentos na seção {secao}")
+                    else:
+                        st.warning(f"⚠️ Não foi possível navegar para a seção {secao}")
+                
+                # Exibe resumo dos documentos encontrados
+                st.subheader("Resumo dos Documentos Encontrados")
+                st.metric("Total de Documentos", total_documentos)
+                
+                # Exibe os documentos por seção
+                for secao, documentos in todos_documentos.items():
+                    with st.expander(f"{secao} ({len(documentos)} documentos)"):
+                        if documentos:
+                            for i, doc in enumerate(documentos):
+                                st.write(f"{i+1}. **{doc.get('nome', 'Documento sem título')}**")
+                                st.write(f"   URL: {doc.get('url', 'Sem URL')}")
+                                st.write("---")
+                        else:
+                            st.write("Nenhum documento encontrado nesta seção.")
+                
+                # Salva os resultados em um arquivo JSON
+                resultado_dir = "resultados_navegacao"
+                if not os.path.exists(resultado_dir):
+                    os.makedirs(resultado_dir)
+                
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                arquivo_json = os.path.join(resultado_dir, f"documentos_sharepoint_{timestamp}.json")
+                
+                with open(arquivo_json, "w", encoding="utf-8") as f:
+                    json.dump(todos_documentos, f, ensure_ascii=False, indent=2)
+                
+                st.success(f"✅ Resultados salvos em: {arquivo_json}")
+                
+                # Oferece download do arquivo
+                with open(arquivo_json, "r", encoding="utf-8") as f:
+                    st.download_button(
+                        label="📥 Baixar Resultados da Navegação",
+                        data=f,
+                        file_name=f"documentos_sharepoint_{timestamp}.json",
+                        mime="application/json"
+                    )
+                
+            except Exception as e:
+                st.error(f"❌ Erro durante a navegação: {str(e)}")
+                st.code(traceback.format_exc())
+            
+            finally:
+                # Fecha o navegador
+                driver.quit()
+                st.info("Navegador fechado.")
+
+# Interface principal do aplicativo
+def main():
+    # Cria abas para diferentes funcionalidades
+    tab1, tab2, tab3 = st.tabs(["Consulta de Documentos", "Explorador de Estrutura", "Navegação Avançada"])
+    
+    with tab1:
+        # Obtém token de autenticação
+        token = get_graph_token()
+        if not token:
+            st.error("❌ Não foi possível obter token de autenticação. Verifique as credenciais.")
+            return
+        
+        # Lista bibliotecas disponíveis
+        bibliotecas = listar_bibliotecas(token)
+        if not bibliotecas:
+            st.error("❌ Não foi possível listar as bibliotecas do SharePoint.")
+            return
+        
+        # Seleção de biblioteca
+        biblioteca_selecionada = st.selectbox(
+            "Selecione uma biblioteca:",
+            options=[b["name"] for b in bibliotecas],
+            format_func=lambda x: f"{x} ({next((b['driveType'] for b in bibliotecas if b['name'] == x), '')})"
+        )
+        
+        # Obtém o ID da biblioteca selecionada
+        drive_id = next((b["id"] for b in bibliotecas if b["name"] == biblioteca_selecionada), None)
+        
+        if drive_id:
+            # Botão para listar arquivos
+            if st.button("🔍 Buscar Documentos"):
+                # Barra de progresso
+                progress_bar = st.progress(0, text="Iniciando busca...")
+                
+                # Lista todos os arquivos na biblioteca
+                arquivos = listar_todos_os_arquivos(token, drive_id, progress_bar=progress_bar)
+                
+                # Exibe resultados
+                st.subheader("Documentos Encontrados")
+                st.write(f"Total de documentos: {len(arquivos)}")
+                
+                # Agrupa por seção
+                arquivos_por_secao = {}
+                for arquivo in arquivos:
+                    caminho = arquivo.get("_caminho_pasta", "/")
+                    secao = "Raiz"
+                    
+                    # Tenta identificar a seção com base no caminho
+                    if "operacoes" in caminho.lower() or "operações" in caminho.lower():
+                        secao = "Operações"
+                    elif "monitoria" in caminho.lower():
+                        secao = "Monitoria"
+                    elif "treinamento" in caminho.lower():
+                        secao = "Treinamento"
+                    elif "documentos" in caminho.lower():
+                        secao = "Documentos"
+                    
+                    # Adiciona à seção correspondente
+                    if secao not in arquivos_por_secao:
+                        arquivos_por_secao[secao] = []
+                    arquivos_por_secao[secao].append(arquivo)
+                
+                # Exibe arquivos por seção
+                for secao, arquivos_secao in arquivos_por_secao.items():
+                    with st.expander(f"Seção {secao}: {len(arquivos_secao)} documentos"):
+                        for arquivo in arquivos_secao:
+                            st.write(f"📄 {arquivo.get('name')} ({arquivo.get('_caminho_pasta', '/')})")
+    
+    with tab2:
+        # Explorador de estrutura do SharePoint
+        explorar_estrutura_sharepoint()
+    
+    with tab3:
+        # Navegação avançada com Selenium
+        acessar_documentos_via_selenium()
+
+if __name__ == "__main__":
+    main()
